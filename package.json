@@ -5,6 +5,7 @@
   "description": "An on device AI predictor with a self custodial wallet for backing your calls on football outcomes.",
   "main": "src/main/main.js",
   "scripts": {
+    "postinstall": "node scripts/fix-electron-binary.js",
     "dev": "concurrently -k -n vite,electron -c blue,magenta \"npm:dev:vite\" \"npm:dev:electron\"",
     "dev:vite": "vite",
     "dev:electron": "wait-on tcp:5173 && electron .",

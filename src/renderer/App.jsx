@@ -10,6 +10,10 @@ export default function App () {
   const [escrowRecord, setEscrowRecord] = useState(null)
   const [log, setLog] = useState([])
 
+  const [videoPath, setVideoPath] = useState(null)
+  const [scoring, setScoring] = useState(false)
+  const [clipScore, setClipScore] = useState(null)
+
   const emit = (msg) => setLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev])
 
   useEffect(() => {
@@ -49,11 +53,38 @@ export default function App () {
     }
   }
 
+  async function handlePickVideo () {
+    try {
+      const picked = await window.probable.clip.pickVideo()
+      if (!picked) { emit('Video pick cancelled'); return }
+      setVideoPath(picked)
+      setClipScore(null)
+      emit(`Picked clip: ${picked}`)
+    } catch (err) {
+      emit(`Pick failed: ${err.message}`)
+    }
+  }
+
+  async function handleScoreClip () {
+    if (!videoPath) return
+    setScoring(true)
+    emit('Scoring clip locally via QVAC… (first run downloads the model)')
+    try {
+      const result = await window.probable.clip.score(videoPath)
+      setClipScore(result)
+      emit(`Scored: total ${result.total}/40 from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
+    } catch (err) {
+      emit(`Score failed: ${err.message}`)
+    } finally {
+      setScoring(false)
+    }
+  }
+
   const released = escrowRecord?.status === 'released'
 
   return (
     <div style={{ fontFamily: 'monospace', padding: 24, background: '#0f1115', color: '#f2f3f5', minHeight: '100vh' }}>
-      <h2>Probable — Escrow Test Harness</h2>
+      <h2>Probable — Test Harness</h2>
 
       <section style={{ marginBottom: 24 }}>
         <strong>App wallet</strong>
@@ -95,6 +126,34 @@ export default function App () {
           </pre>
         </section>
       )}
+
+      <section style={{ marginBottom: 24 }}>
+        <strong>Clip scoring (QVAC — local, on-device)</strong>
+        <p style={{ margin: '4px 0' }}>Clip: {videoPath ?? '(none selected)'}</p>
+        <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
+          <button onClick={handleScoreClip} disabled={!videoPath || scoring}>
+            {scoring ? 'Scoring…' : 'Run scoreClip'}
+          </button>
+        </div>
+
+        {clipScore && (
+          <div style={{ marginTop: 12 }}>
+            <p style={{ margin: '4px 0' }}>
+              Total: <strong>{clipScore.total}/40</strong> · model: {clipScore.model}
+              {clipScore.mock ? ' · MOCK' : ''} · {clipScore.frameCount} frames
+            </p>
+            {['skill', 'difficulty', 'aesthetic', 'fairPlay'].map((field) => (
+              <div key={field} style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
+                <div><strong>{field}</strong>: {clipScore.scores[field].score}/10</div>
+                <div style={{ fontSize: 12, color: '#c8ccd2', marginTop: 4 }}>
+                  {clipScore.scores[field].explanation}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       <section>
         <strong>Log</strong>

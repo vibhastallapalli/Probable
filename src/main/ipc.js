@@ -4,6 +4,7 @@ const { ipcMain, dialog } = require('electron')
 const wallet = require('./wallet')
 const escrow = require('./escrow')
 const scoring = require('./scoring')
+const settlement = require('./settlement')
 
 function registerHandlers () {
   ipcMain.handle('wallet:get-address', () => {
@@ -46,6 +47,10 @@ function registerHandlers () {
   // Exposed for testing; NOT yet wired to escrow.releaseEscrow (manual next step).
   ipcMain.handle('clip:compare', (_event, clipA, clipB) => {
     return scoring.compareClips(clipA, clipB)
+  })
+
+  ipcMain.handle('match:settle', (_event, matchId, clipA, clipB, addressA, addressB) => {
+    return settlement.settleMatch(matchId, clipA, clipB, addressA, addressB)
   })
 }
 

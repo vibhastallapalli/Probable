@@ -1,0 +1,14 @@
+node_modules/
+out/
+dist/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.local
+*.local
+probable-data/
+models/
+*.mp4
+*.mov
+!docs/sample-clips/.gitkeep

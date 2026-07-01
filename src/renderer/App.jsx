@@ -13,6 +13,9 @@ export default function App () {
   const [videoPath, setVideoPath] = useState(null)
   const [scoring, setScoring] = useState(false)
   const [clipScore, setClipScore] = useState(null)
+  const [clipScoreA, setClipScoreA] = useState(null)
+  const [clipScoreB, setClipScoreB] = useState(null)
+  const [settleResult, setSettleResult] = useState(null)
 
   const emit = (msg) => setLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev])
 
@@ -80,6 +83,22 @@ export default function App () {
     }
   }
 
+  async function handleSettle () {
+    try {
+      const result = await window.probable.match.settle(escrowId, clipScoreA, clipScoreB, PLAYER_A, PLAYER_B)
+      setSettleResult(result)
+      if (result.outcome === 'unfunded') {
+        emit(`Settle: unfunded — match wallet balance is ${result.balance} USDT`)
+      } else if (result.outcome === 'tied') {
+        emit(`Settle: tied (${result.totalA} vs ${result.totalB}) — escrow untouched, needs human review`)
+      } else {
+        emit(`Settle: winner ${result.winner} (${result.winnerAddress.slice(0, 10)}…) | +${result.margin}pts | ${result.payout} USDT | tx: ${result.txHash}`)
+      }
+    } catch (err) {
+      emit(`Settle failed: ${err.message}`)
+    }
+  }
+
   const released = escrowRecord?.status === 'released'
 
   return (
@@ -143,6 +162,14 @@ export default function App () {
               Total: <strong>{clipScore.total}/40</strong> · model: {clipScore.model}
               {clipScore.mock ? ' · MOCK' : ''} · {clipScore.frameCount} frames
             </p>
+            <div style={{ marginTop: 6, display: 'flex', gap: 8 }}>
+              <button onClick={() => { setClipScoreA(clipScore); emit(`Clip A assigned (total ${clipScore.total}/40)`) }}>
+                Assign → Clip A (Player A)
+              </button>
+              <button onClick={() => { setClipScoreB(clipScore); emit(`Clip B assigned (total ${clipScore.total}/40)`) }}>
+                Assign → Clip B (Player B)
+              </button>
+            </div>
             {['skill', 'difficulty', 'aesthetic', 'fairPlay'].map((field) => (
               <div key={field} style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
                 <div><strong>{field}</strong>: {clipScore.scores[field].score}/10</div>
@@ -152,6 +179,27 @@ export default function App () {
               </div>
             ))}
           </div>
+        )}
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <strong>Match settlement</strong>
+        <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
+          Clip A: {clipScoreA ? `scored (${clipScoreA.total}/40)` : 'not assigned'} ·
+          Clip B: {clipScoreB ? `scored (${clipScoreB.total}/40)` : 'not assigned'}
+        </p>
+        <div style={{ marginTop: 8 }}>
+          <button
+            onClick={handleSettle}
+            disabled={!escrowId || !clipScoreA || !clipScoreB || released}
+          >
+            Settle match
+          </button>
+        </div>
+        {settleResult && (
+          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12 }}>
+            {JSON.stringify(settleResult, null, 2)}
+          </pre>
         )}
       </section>
 

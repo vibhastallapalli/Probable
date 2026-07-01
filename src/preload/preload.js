@@ -29,4 +29,9 @@ contextBridge.exposeInMainWorld('probable', {
     score: (videoPath) => ipcRenderer.invoke('clip:score', videoPath),
     compare: (clipA, clipB) => ipcRenderer.invoke('clip:compare', clipA, clipB),
   },
+
+  match: {
+    settle: (matchId, clipA, clipB, addressA, addressB) =>
+      ipcRenderer.invoke('match:settle', matchId, clipA, clipB, addressA, addressB),
+  },
 })

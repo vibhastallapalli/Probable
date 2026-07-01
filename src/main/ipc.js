@@ -1,8 +1,9 @@
 'use strict'
 
-const { ipcMain } = require('electron')
+const { ipcMain, dialog } = require('electron')
 const wallet = require('./wallet')
 const escrow = require('./escrow')
+const scoring = require('./scoring')
 
 function registerHandlers () {
   ipcMain.handle('wallet:get-address', () => {
@@ -19,6 +20,32 @@ function registerHandlers () {
 
   ipcMain.handle('escrow:release', (_event, escrowId, winnerAddress) => {
     return escrow.releaseEscrow(escrowId, winnerAddress)
+  })
+
+  // Renderer has no filesystem access — the file picker runs in main.
+  ipcMain.handle('clip:pick-video', async () => {
+    // Test seam: bypass the native dialog in automated runs. Unset in normal use.
+    if (process.env.QVAC_TEST_CLIP) return process.env.QVAC_TEST_CLIP
+    const result = await dialog.showOpenDialog({
+      title: 'Select a clip to score',
+      properties: ['openFile'],
+      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  // Full local pipeline: probe → extract frames → score via QVAC.
+  ipcMain.handle('clip:score', async (_event, videoPath) => {
+    const duration = await scoring.getVideoDuration(videoPath)
+    const frames = await scoring.extractFrames(videoPath, { duration })
+    const score = await scoring.scoreClip(frames, { duration })
+    return { ...score, videoPath }
+  })
+
+  // Exposed for testing; NOT yet wired to escrow.releaseEscrow (manual next step).
+  ipcMain.handle('clip:compare', (_event, clipA, clipB) => {
+    return scoring.compareClips(clipA, clipB)
   })
 }
 

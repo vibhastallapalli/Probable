@@ -23,4 +23,10 @@ contextBridge.exposeInMainWorld('probable', {
     release: (escrowId, winnerAddress) =>
       ipcRenderer.invoke('escrow:release', escrowId, winnerAddress),
   },
+
+  clip: {
+    pickVideo: () => ipcRenderer.invoke('clip:pick-video'),
+    score: (videoPath) => ipcRenderer.invoke('clip:score', videoPath),
+    compare: (clipA, clipB) => ipcRenderer.invoke('clip:compare', clipA, clipB),
+  },
 })

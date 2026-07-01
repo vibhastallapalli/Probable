@@ -1,10 +1,16 @@
-const { app, BrowserWindow } = require('electron');
-const path = require('path');
+'use strict'
 
-const isDev = !app.isPackaged;
-const DEV_SERVER_URL = 'http://localhost:5173';
+const path = require('path')
+require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') })
 
-function createWindow() {
+const { app, BrowserWindow } = require('electron')
+const { initWallet } = require('./wallet')
+const { registerHandlers } = require('./ipc')
+
+const isDev = !app.isPackaged
+const DEV_SERVER_URL = 'http://localhost:5173'
+
+function createWindow () {
   const win = new BrowserWindow({
     width: 1024,
     height: 768,
@@ -15,24 +21,26 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
     },
-  });
+  })
 
   if (isDev) {
-    win.loadURL(DEV_SERVER_URL);
-    win.webContents.openDevTools({ mode: 'detach' });
+    win.loadURL(DEV_SERVER_URL)
+    win.webContents.openDevTools({ mode: 'detach' })
   } else {
-    win.loadFile(path.join(__dirname, '..', '..', 'dist', 'index.html'));
+    win.loadFile(path.join(__dirname, '..', '..', 'dist', 'index.html'))
   }
 }
 
-app.whenReady().then(() => {
-  createWindow();
+app.whenReady().then(async () => {
+  registerHandlers()
+  await initWallet()
+  createWindow()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
-});
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+  if (process.platform !== 'darwin') app.quit()
+})

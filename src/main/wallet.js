@@ -5,7 +5,7 @@ const fs = require('fs')
 const { app } = require('electron')
 
 // Exported so escrow.js can reference the same token without duplicating the address.
-const USDT_SEPOLIA = '0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0'
+const USDT_SEPOLIA = '0xd077a400968890eacc75cdc901f0356c943e4fdb'
 
 let _address = null
 

@@ -10,6 +10,8 @@ export default function App () {
   const [escrowRecord, setEscrowRecord] = useState(null)
   const [log, setLog] = useState([])
 
+  const [loadId, setLoadId] = useState('')
+
   const [videoPath, setVideoPath] = useState(null)
   const [scoring, setScoring] = useState(false)
   const [clipScore, setClipScore] = useState(null)
@@ -33,6 +35,19 @@ export default function App () {
       emit(`Escrow created ${result.id.slice(0, 8)}… | balance: ${result.balance} USDt | status: ${result.status}`)
     } catch (err) {
       emit(`Create failed: ${err.message}`)
+    }
+  }
+
+  async function handleLoad () {
+    const id = loadId.trim()
+    if (!id) return
+    try {
+      const result = await window.probable.escrow.getStatus(id)
+      setEscrowId(result.id)
+      setEscrowRecord(result)
+      emit(`Loaded escrow ${result.id.slice(0, 8)}… | balance: ${result.balance} USDt | status: ${result.status}`)
+    } catch (err) {
+      emit(`Load failed: ${err.message}`)
     }
   }
 
@@ -119,9 +134,20 @@ export default function App () {
 
       <section style={{ marginBottom: 24 }}>
         <strong>Escrow actions</strong>
-        <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <button onClick={handleCreate} disabled={!!escrowId}>
             Create test escrow
+          </button>
+          <input
+            type="text"
+            placeholder="Escrow ID"
+            value={loadId}
+            onChange={(e) => setLoadId(e.target.value)}
+            disabled={!!escrowId}
+            style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: '1px solid #444', borderRadius: 4, width: 280 }}
+          />
+          <button onClick={handleLoad} disabled={!!escrowId || !loadId.trim()}>
+            Load escrow
           </button>
           {escrowId && (
             <>

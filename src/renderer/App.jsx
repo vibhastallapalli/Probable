@@ -1,11 +1,15 @@
 import React, { useState, useEffect } from 'react'
 
-const PLAYER_A = '0xAAAA000000000000000000000000000000000001'
-const PLAYER_B = '0xBBBB000000000000000000000000000000000002'
 const STAKE = 100
+
+function isValidAddress (val) {
+  return typeof val === 'string' && /^0x[0-9a-fA-F]{40}$/.test(val)
+}
 
 export default function App () {
   const [address, setAddress] = useState(null)
+  const [playerA, setPlayerA] = useState('')
+  const [playerB, setPlayerB] = useState('')
   const [escrowId, setEscrowId] = useState(null)
   const [escrowRecord, setEscrowRecord] = useState(null)
   const [log, setLog] = useState([])
@@ -28,8 +32,12 @@ export default function App () {
   }, [])
 
   async function handleCreate () {
+    if (!isValidAddress(playerA) || !isValidAddress(playerB)) {
+      emit('Both player addresses must be valid 42-character 0x addresses')
+      return
+    }
     try {
-      const result = await window.probable.escrow.create(PLAYER_A, PLAYER_B, STAKE)
+      const result = await window.probable.escrow.create(playerA, playerB, STAKE)
       setEscrowId(result.id)
       setEscrowRecord(result)
       emit(`Escrow created ${result.id.slice(0, 8)}… | balance: ${result.balance} USDt | status: ${result.status}`)
@@ -100,7 +108,7 @@ export default function App () {
 
   async function handleSettle () {
     try {
-      const result = await window.probable.match.settle(escrowId, clipScoreA, clipScoreB, PLAYER_A, PLAYER_B)
+      const result = await window.probable.match.settle(escrowId, clipScoreA, clipScoreB, playerA, playerB)
       setSettleResult(result)
       if (result.outcome === 'unfunded') {
         emit(`Settle: unfunded — match wallet balance is ${result.balance} USDT`)
@@ -126,16 +134,46 @@ export default function App () {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <strong>Test participants (hardcoded)</strong>
-        <p style={{ margin: '4px 0' }}>Player A: {PLAYER_A}</p>
-        <p style={{ margin: '4px 0' }}>Player B: {PLAYER_B}</p>
+        <strong>Test participants</strong>
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label style={{ fontSize: 12 }}>
+            Player A address
+            <input
+              type="text"
+              placeholder="0x…"
+              value={playerA}
+              onChange={(e) => setPlayerA(e.target.value.trim())}
+              disabled={!!escrowId}
+              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerA && !isValidAddress(playerA) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
+            />
+            {playerA && !isValidAddress(playerA) && (
+              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42-character 0x address</span>
+            )}
+          </label>
+          <label style={{ fontSize: 12 }}>
+            Player B address
+            <input
+              type="text"
+              placeholder="0x…"
+              value={playerB}
+              onChange={(e) => setPlayerB(e.target.value.trim())}
+              disabled={!!escrowId}
+              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerB && !isValidAddress(playerB) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
+            />
+            {playerB && !isValidAddress(playerB) && (
+              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42-character 0x address</span>
+            )}
+          </label>
+        </div>
+        <p style={{ margin: '8px 0 4px', fontSize: 12 }}>Player A: {playerA || '(not set)'}</p>
+        <p style={{ margin: '4px 0', fontSize: 12 }}>Player B: {playerB || '(not set)'}</p>
         <p style={{ margin: '4px 0' }}>Stake per player: {STAKE} USDt (total: {STAKE * 2} USDt)</p>
       </section>
 
       <section style={{ marginBottom: 24 }}>
         <strong>Escrow actions</strong>
         <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button onClick={handleCreate} disabled={!!escrowId}>
+          <button onClick={handleCreate} disabled={!!escrowId || !isValidAddress(playerA) || !isValidAddress(playerB)}>
             Create test escrow
           </button>
           <input
@@ -152,10 +190,10 @@ export default function App () {
           {escrowId && (
             <>
               <button onClick={handleRefresh}>Refresh status</button>
-              <button onClick={() => handleRelease(PLAYER_A, 'Player A')} disabled={released}>
+              <button onClick={() => handleRelease(playerA, 'Player A')} disabled={released}>
                 Release → Player A
               </button>
-              <button onClick={() => handleRelease(PLAYER_B, 'Player B')} disabled={released}>
+              <button onClick={() => handleRelease(playerB, 'Player B')} disabled={released}>
                 Release → Player B
               </button>
             </>

@@ -6,3 +6,6 @@ out/
 Thumbs.db
 .env
 
+.vite/
+.obsidian/
+graphify-out/

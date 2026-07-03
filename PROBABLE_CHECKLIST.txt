@@ -54,7 +54,33 @@ HARD SUBMISSION REQUIREMENTS
 [ ] 3 minute unlisted YouTube demo linked
 [ ] Screen recording from Round of 16 onward proving it runs live
 [ ] All AI runs through QVAC SDK, zero cloud calls
-[ ] Nothing referencing any AI assistant anywhere in the repo: commits, co authors, contributors, metadata
+[ ] Nothing referencing the AI assistant anywhere in the repo: commits, co authors, contributors, metadata
+
+=====================================================
+CREDIBILITY FIX: MAKE THE SCORE SHOW ITS REASONING (planned, code later)
+=====================================================
+The problem this solves: if a judge asks why should we trust the AI score, right now the honest
+answer is a small model looked at 8 frames and gave a number. Too soft. This is the fix.
+
+The reframe (say this out loud in the pitch): we are NOT claiming the AI is objectively right.
+Coolness is subjective, that is the point. We claim it is impartial, consistent, and transparent,
+applying FIFA's own Puskas Award criteria [the real recognised standard for judging goal quality].
+That is what no human judge or sportsbook can offer for a subjective bet.
+
+The one build ask:
+[ ] Add one plain English sentence per rubric category to the model output, saying WHY that
+    category got its score
+    example: difficulty 8 of 10, struck first time from outside the box under pressure
+    nearly free since the model already reasons to produce the number, we just surface it in the
+    JSON schema we already use
+[ ] Surface those sentences in the UI next to each category score so the judge SEES the AI justify
+    itself against a named rubric instead of pulling a number from nowhere
+[ ] First step before any edit: read scoring.js and the output schema and report the current
+    output shape, where the rubric categories live, how output flows to the UI, and whether the
+    schema is strict, BEFORE changing anything
+
+Also lean on the rubric out loud: we did not invent what makes a goal good, we encoded the criteria
+FIFA uses for its own goal of the year award.
 
 =====================================================
 STRETCH GOAL (only if critical path is fully green with time to spare)

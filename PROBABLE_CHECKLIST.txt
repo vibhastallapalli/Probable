@@ -1,0 +1,71 @@
+PROBABLE - HACKATHON SUBMISSION CHECKLIST
+Tether Developers Cup | Final submission July 14 23:59 UK | Treat July 12 as the real deadline
+
+=====================================================
+CRITICAL PATH (nothing else matters until these two are green)
+=====================================================
+[ ] Real money round trip works on camera
+    real funds in > both clips scored > winner settled > real tx hash confirms on Sepolia
+    this is the hero shot of the whole video, if the tx does not confirm on screen there is no demo
+[ ] QVAC scores a REAL clip end to end
+    still untested, the single largest unverified risk
+    run at least one real football clip through the SmolVLM2 pipeline and confirm a sane score comes out
+[ ] Merge branch update-usdt-sepolia-address into main
+[ ] Confirm branch switch_usdt_sepolia_token is dead and ignored
+
+=====================================================
+PROOF OF ON DEVICE AI (the Future Selves steal)
+=====================================================
+[ ] Status badge in the UI: model name, inference on device, bytes uploaded 0
+    cheap to build, photographs well in every screenshot, proves QVAC rule compliance at a glance
+[ ] Airplane mode beat scripted for the video
+    wifi off > QVAC still scores both clips > wifi back on > settlement confirms on chain
+    one visual beat proves local inference AND explains the whole architecture without narration
+[ ] Reminder: ANY cloud AI call disqualifies from the QVAC track entirely, not partial credit
+
+=====================================================
+DEMO VIDEO (3 min max, target 2, unlisted YouTube)
+=====================================================
+[ ] Cold open on the product, no intro, no hi we are
+[ ] First 10 sec hook: two friends disagree on whose goal was better, real money on the line, AI referee settles it
+[ ] One sentence each on the two tracks: scoring fully on device (QVAC), payout real self custodial USDt per match (WDK)
+[ ] Hero flow 60 to 90 sec: judge mode start to finish, two clips in, both scored, winner paid, tx hash shown
+[ ] Sound bigger 20 sec, spoken over a pan of the market picker: same engine settles any bet friends make, match winner, player of the match, even subjective calls no sportsbook could judge
+[ ] Close on one line of vision: sportsbooks settle facts, Probable settles arguments
+[ ] Two player screens recorded SEPARATELY, sync marker (countdown or clap), composited into corners
+[ ] Record visuals first, narrate audio after over the top
+[ ] Clean screen capture, decent mic, quiet room, no music, no fancy transitions
+[ ] Upload early, uploads can take hours
+
+=====================================================
+BUIDL PAGE / WRITEUP (steal structure from Future Selves + Cup Pulse)
+=====================================================
+[ ] Standard story sections: inspiration, what it does, how we built it, challenges, what is next
+[ ] What the Judge Sees: numbered walkthrough of the exact demo flow
+[ ] Track criteria table: map each requirement to how Probable delivers it (real QVAC inference, real WDK tx, football theme, working build)
+[ ] Challenges section war stories: the empty npm stub with full docs, the wrong hardcoded USDT address hunt (proves real integration vs mock mode)
+[ ] Kill shot line vs GoalChain: in every other project the AI talks and the wallet pays, in ours the AI decision IS what pays
+
+=====================================================
+HARD SUBMISSION REQUIREMENTS
+=====================================================
+[ ] Public GitHub repo, MIT or Apache license
+[ ] Clear setup instructions in README
+[ ] 3 minute unlisted YouTube demo linked
+[ ] Screen recording from Round of 16 onward proving it runs live
+[ ] All AI runs through QVAC SDK, zero cloud calls
+[ ] Nothing referencing any AI assistant anywhere in the repo: commits, co authors, contributors, metadata
+
+=====================================================
+STRETCH GOAL (only if critical path is fully green with time to spare)
+=====================================================
+[ ] TTS line announcing the verdict like a commentator (touches a second QVAC capability, near zero cost)
+    do NOT touch this before the critical path is done
+
+=====================================================
+COMPETITIVE READ (why the plan does not change)
+=====================================================
+GoalChain: closest rival, all three tracks, but AI and wallet never touch, uses mock mode fallback
+TTerminal: World Cup betting on facts via Polymarket, no AI, confirms objective betting is crowded
+Cup Pulse / KLIQ: Pears watch party tools, not our lane
+Nobody is settling subjective bets with an AI referee. That lane is empty. Depth that moves real money beats a capability checklist.

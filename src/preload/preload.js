@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('probable', {
     compare: (clipA, clipB) => ipcRenderer.invoke('clip:compare', clipA, clipB),
   },
 
+  scoring: {
+    modelInfo: () => ipcRenderer.invoke('scoring:model'),
+  },
+
   match: {
     settle: (matchId, clipA, clipB, addressA, addressB) =>
       ipcRenderer.invoke('match:settle', matchId, clipA, clipB, addressA, addressB),

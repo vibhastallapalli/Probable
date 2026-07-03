@@ -36,6 +36,11 @@ function registerHandlers () {
     return result.filePaths[0]
   })
 
+  // Static facts about the local model, shown by the status badge in the UI.
+  ipcMain.handle('scoring:model', () => {
+    return scoring.MODEL_INFO
+  })
+
   // Full local pipeline: probe → extract frames → score via QVAC.
   ipcMain.handle('clip:score', async (_event, videoPath) => {
     const duration = await scoring.getVideoDuration(videoPath)

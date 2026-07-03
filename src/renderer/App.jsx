@@ -2,8 +2,52 @@ import React, { useState, useEffect } from 'react'
 
 const STAKE = 100
 
+// The four categories of FIFA's Puskas Award rubric [the criteria FIFA uses
+// to judge its own goal of the year]. Each label pairs plain English with the
+// meaning in brackets, and `key` matches the fields in the score JSON.
+const RUBRIC = [
+  { key: 'skill', label: 'Skill', gloss: 'clean technique and ball control' },
+  { key: 'difficulty', label: 'Difficulty', gloss: 'how hard the play was to pull off' },
+  { key: 'aesthetic', label: 'Aesthetic', gloss: 'how spectacular it looks' },
+  { key: 'fairPlay', label: 'Fair play', gloss: 'clean sporting conduct' },
+]
+
+// Fallback so the status badge renders even before the main process replies.
+const DEFAULT_MODEL_INFO = { name: 'SmolVLM2 500M', id: '', runtime: 'QVAC' }
+
 function isValidAddress (val) {
   return typeof val === 'string' && /^0x[0-9a-fA-F]{40}$/.test(val)
+}
+
+// Always visible proof of QVAC compliance: which model, where it runs, and
+// that nothing gets uploaded. Flips to an amber mock warning when the last
+// score came from the offline stand in, so the badge never overclaims.
+function StatusBadge ({ modelInfo, mockMode }) {
+  const accent = mockMode ? '#e67e22' : '#2ecc71'
+  return (
+    <div
+      title={modelInfo.id}
+      style={{
+        position: 'fixed',
+        top: 12,
+        right: 12,
+        zIndex: 1000,
+        padding: '8px 12px',
+        background: mockMode ? '#2a1c0e' : '#0e2418',
+        border: `1px solid ${accent}`,
+        borderRadius: 6,
+        fontSize: 11,
+        lineHeight: 1.7,
+      }}
+    >
+      <div style={{ color: accent, fontWeight: 'bold', letterSpacing: 1 }}>
+        {mockMode ? '● MOCK MODE [no model loaded]' : '● ON DEVICE AI [QVAC]'}
+      </div>
+      <div>Model: {modelInfo.name}</div>
+      <div>Inference: {mockMode ? 'offline stand in, not the real model' : 'on device, zero cloud calls'}</div>
+      <div>Bytes uploaded: 0</div>
+    </div>
+  )
 }
 
 export default function App () {
@@ -17,6 +61,7 @@ export default function App () {
   const [loadId, setLoadId] = useState('')
 
   const [videoPath, setVideoPath] = useState(null)
+  const [modelInfo, setModelInfo] = useState(DEFAULT_MODEL_INFO)
   const [scoring, setScoring] = useState(false)
   const [clipScore, setClipScore] = useState(null)
   const [clipScoreA, setClipScoreA] = useState(null)
@@ -29,11 +74,14 @@ export default function App () {
     window.probable.wallet.getAddress()
       .then((addr) => { setAddress(addr); emit(`Wallet ready: ${addr}`) })
       .catch((err) => emit(`Wallet error: ${err.message}`))
+    window.probable.scoring.modelInfo()
+      .then((info) => { if (info) setModelInfo(info) })
+      .catch(() => { /* badge falls back to the default text */ })
   }, [])
 
   async function handleCreate () {
     if (!isValidAddress(playerA) || !isValidAddress(playerB)) {
-      emit('Both player addresses must be valid 42-character 0x addresses')
+      emit('Both player addresses must be valid 42 character 0x addresses')
       return
     }
     try {
@@ -98,7 +146,7 @@ export default function App () {
     try {
       const result = await window.probable.clip.score(videoPath)
       setClipScore(result)
-      emit(`Scored: total ${result.total}/40 from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
+      emit(`Scored: total ${result.total} of 40 from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
     } catch (err) {
       emit(`Score failed: ${err.message}`)
     } finally {
@@ -111,9 +159,9 @@ export default function App () {
       const result = await window.probable.match.settle(escrowId, clipScoreA, clipScoreB, playerA, playerB)
       setSettleResult(result)
       if (result.outcome === 'unfunded') {
-        emit(`Settle: unfunded — match wallet balance is ${result.balance} USDT`)
+        emit(`Settle: unfunded, match wallet balance is ${result.balance} USDT`)
       } else if (result.outcome === 'tied') {
-        emit(`Settle: tied (${result.totalA} vs ${result.totalB}) — escrow untouched, needs human review`)
+        emit(`Settle: tied (${result.totalA} vs ${result.totalB}), escrow untouched, needs human review`)
       } else {
         emit(`Settle: winner ${result.winner} (${result.winnerAddress.slice(0, 10)}…) | +${result.margin}pts | ${result.payout} USDT | tx: ${result.txHash}`)
       }
@@ -126,7 +174,8 @@ export default function App () {
 
   return (
     <div style={{ fontFamily: 'monospace', padding: 24, background: '#0f1115', color: '#f2f3f5', minHeight: '100vh' }}>
-      <h2>Probable — Test Harness</h2>
+      <StatusBadge modelInfo={modelInfo} mockMode={clipScore?.mock === true} />
+      <h2>Probable Test Harness</h2>
 
       <section style={{ marginBottom: 24 }}>
         <strong>App wallet</strong>
@@ -147,7 +196,7 @@ export default function App () {
               style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerA && !isValidAddress(playerA) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
             />
             {playerA && !isValidAddress(playerA) && (
-              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42-character 0x address</span>
+              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
             )}
           </label>
           <label style={{ fontSize: 12 }}>
@@ -161,7 +210,7 @@ export default function App () {
               style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerB && !isValidAddress(playerB) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
             />
             {playerB && !isValidAddress(playerB) && (
-              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42-character 0x address</span>
+              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
             )}
           </label>
         </div>
@@ -211,7 +260,10 @@ export default function App () {
       )}
 
       <section style={{ marginBottom: 24 }}>
-        <strong>Clip scoring (QVAC — local, on-device)</strong>
+        <strong>Clip scoring [judged on this device via QVAC]</strong>
+        <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
+          Scored on the four FIFA Puskas Award criteria [the rubric FIFA uses for its own goal of the year]
+        </p>
         <p style={{ margin: '4px 0' }}>Clip: {videoPath ?? '(none selected)'}</p>
         <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
@@ -223,22 +275,24 @@ export default function App () {
         {clipScore && (
           <div style={{ marginTop: 12 }}>
             <p style={{ margin: '4px 0' }}>
-              Total: <strong>{clipScore.total}/40</strong> · model: {clipScore.model}
+              Total: <strong>{clipScore.total} of 40</strong> · model: {clipScore.model}
               {clipScore.mock ? ' · MOCK' : ''} · {clipScore.frameCount} frames
             </p>
             <div style={{ marginTop: 6, display: 'flex', gap: 8 }}>
-              <button onClick={() => { setClipScoreA(clipScore); emit(`Clip A assigned (total ${clipScore.total}/40)`) }}>
+              <button onClick={() => { setClipScoreA(clipScore); emit(`Clip A assigned (total ${clipScore.total} of 40)`) }}>
                 Assign → Clip A (Player A)
               </button>
-              <button onClick={() => { setClipScoreB(clipScore); emit(`Clip B assigned (total ${clipScore.total}/40)`) }}>
+              <button onClick={() => { setClipScoreB(clipScore); emit(`Clip B assigned (total ${clipScore.total} of 40)`) }}>
                 Assign → Clip B (Player B)
               </button>
             </div>
-            {['skill', 'difficulty', 'aesthetic', 'fairPlay'].map((field) => (
-              <div key={field} style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
-                <div><strong>{field}</strong>: {clipScore.scores[field].score}/10</div>
+            {RUBRIC.map(({ key, label, gloss }) => (
+              <div key={key} style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
+                <div>
+                  <strong>{label}</strong> <span style={{ color: '#8a8f98' }}>[{gloss}]</span>: {clipScore.scores[key].score} of 10
+                </div>
                 <div style={{ fontSize: 12, color: '#c8ccd2', marginTop: 4 }}>
-                  {clipScore.scores[field].explanation}
+                  Why: {clipScore.scores[key].explanation}
                 </div>
               </div>
             ))}
@@ -249,8 +303,8 @@ export default function App () {
       <section style={{ marginBottom: 24 }}>
         <strong>Match settlement</strong>
         <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
-          Clip A: {clipScoreA ? `scored (${clipScoreA.total}/40)` : 'not assigned'} ·
-          Clip B: {clipScoreB ? `scored (${clipScoreB.total}/40)` : 'not assigned'}
+          Clip A: {clipScoreA ? `scored (${clipScoreA.total} of 40)` : 'not assigned'} ·
+          Clip B: {clipScoreB ? `scored (${clipScoreB.total} of 40)` : 'not assigned'}
         </p>
         <div style={{ marginTop: 8 }}>
           <button

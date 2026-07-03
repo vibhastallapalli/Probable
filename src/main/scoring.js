@@ -164,6 +164,14 @@ async function extractFrames (videoPath, opts = {}) {
 // Clip scoring (QVAC local inference)
 // ---------------------------------------------------------------------------
 
+// Single source of truth for the status badge in the renderer. Keep in step
+// with the modelSrc used in getModel below so the badge never lies on camera.
+const MODEL_INFO = {
+  name: 'SmolVLM2 500M',
+  id: 'SMOLVLM2_500M_MULTIMODAL_Q8_0',
+  runtime: 'QVAC',
+}
+
 // Lazily-loaded, process-wide multimodal model handle. Loading pulls the model
 // into memory (and downloads it on first ever use), so we do it once and reuse.
 let _qvac = null
@@ -242,7 +250,7 @@ async function scoreClip (frames, metadata = {}) {
   return finalizeScore(parsed, {
     frameCount: frames.length,
     duration: metadata.duration || 0,
-    model: 'SMOLVLM2_500M_MULTIMODAL_Q8_0',
+    model: MODEL_INFO.id,
     mock: false,
   })
 }
@@ -344,6 +352,7 @@ function mockScore (frames, metadata) {
 
 module.exports = {
   SCORING_PROMPT,
+  MODEL_INFO,
   extractFrames,
   getVideoDuration,
   scoreClip,

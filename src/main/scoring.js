@@ -82,6 +82,12 @@ const SCORE_FIELDS = ['skill', 'difficulty', 'aesthetic', 'fairPlay']
 const FPS_CEILING = 30
 const DEFAULT_MAX_FRAMES = Number(process.env.QVAC_MAX_FRAMES) || 8
 
+// Minimum source frame rate [frames per second, fps] we consider reliable for
+// scoring. Clips under this get a visible warning in the UI but are never
+// blocked. The check rounds to the nearest whole number first so NTSC style
+// rates [29.97 fps, which cameras label as 30] never trip a false warning.
+const MIN_CLIP_FPS = 30
+
 // Multimodal model context. Must be large enough to hold several projected
 // images plus the prompt and JSON answer.
 const MODEL_CTX_SIZE = Number(process.env.QVAC_CTX_SIZE) || 4096
@@ -104,6 +110,59 @@ async function getVideoDuration (videoPath) {
   ])
   const duration = parseFloat(String(stdout).trim())
   return Number.isFinite(duration) && duration > 0 ? duration : 0
+}
+
+/**
+ * Probe a video's duration and frame rate in a single ffprobe call.
+ *
+ * @param {string} videoPath
+ * @returns {Promise<{duration: number, fps: number|null, lowFps: boolean, minFps: number}>}
+ *   duration in seconds, fps as a number or null when unreadable, lowFps true
+ *   when the clip is meaningfully under MIN_CLIP_FPS, and minFps echoing the
+ *   threshold so the UI can show it without duplicating the constant.
+ */
+async function probeVideo (videoPath) {
+  const { stdout } = await execFileAsync(ffprobePath, [
+    '-v', 'error',
+    '-select_streams', 'v:0',
+    '-show_entries', 'stream=avg_frame_rate,r_frame_rate',
+    '-show_entries', 'format=duration',
+    '-of', 'json',
+    videoPath,
+  ])
+
+  let info = {}
+  try { info = JSON.parse(String(stdout)) } catch { /* fall through to safe defaults */ }
+
+  const duration = parseFloat(info?.format?.duration)
+  const stream = Array.isArray(info?.streams) ? info.streams[0] : null
+
+  // avg_frame_rate counts the frames the file actually contains, the honest
+  // number for phone footage with a variable frame rate. r_frame_rate is the
+  // container's declared base rate, kept as a fallback.
+  const fps = parseFrameRate(stream?.avg_frame_rate) || parseFrameRate(stream?.r_frame_rate) || null
+
+  return {
+    duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
+    fps,
+    // Warn only when the rate could actually be read. Rounding first keeps a
+    // 29.97 fps clip from being flagged as under 30.
+    lowFps: fps !== null && Math.round(fps) < MIN_CLIP_FPS,
+    minFps: MIN_CLIP_FPS,
+  }
+}
+
+// ffprobe reports frame rates as fractions like "30000/1001". Returns the
+// rate as a plain number, or 0 when the field is missing or malformed.
+function parseFrameRate (value) {
+  if (typeof value !== 'string' || value.length === 0) return 0
+  const parts = value.split('/')
+  const num = Number(parts[0])
+  if (!Number.isFinite(num) || num <= 0) return 0
+  if (parts.length === 1) return num
+  const den = Number(parts[1])
+  if (!Number.isFinite(den) || den <= 0) return 0
+  return num / den
 }
 
 /**
@@ -353,8 +412,10 @@ function mockScore (frames, metadata) {
 module.exports = {
   SCORING_PROMPT,
   MODEL_INFO,
+  MIN_CLIP_FPS,
   extractFrames,
   getVideoDuration,
+  probeVideo,
   scoreClip,
   compareClips,
 }

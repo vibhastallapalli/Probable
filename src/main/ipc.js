@@ -41,12 +41,18 @@ function registerHandlers () {
     return scoring.MODEL_INFO
   })
 
+  // Lightweight metadata read so the UI can warn about a low frame rate as
+  // soon as a clip is picked, before any scoring work starts.
+  ipcMain.handle('clip:probe', (_event, videoPath) => {
+    return scoring.probeVideo(videoPath)
+  })
+
   // Full local pipeline: probe → extract frames → score via QVAC.
   ipcMain.handle('clip:score', async (_event, videoPath) => {
-    const duration = await scoring.getVideoDuration(videoPath)
+    const { duration, fps, lowFps } = await scoring.probeVideo(videoPath)
     const frames = await scoring.extractFrames(videoPath, { duration })
     const score = await scoring.scoreClip(frames, { duration })
-    return { ...score, videoPath }
+    return { ...score, videoPath, fps, lowFps }
   })
 
   // Exposed for testing; NOT yet wired to escrow.releaseEscrow (manual next step).

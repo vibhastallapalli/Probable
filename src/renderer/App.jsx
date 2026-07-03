@@ -19,6 +19,11 @@ function isValidAddress (val) {
   return typeof val === 'string' && /^0x[0-9a-fA-F]{40}$/.test(val)
 }
 
+// One decimal is plenty for a frame rate readout [24, 25, or 29.97 style values].
+function roundFps (fps) {
+  return Math.round(fps * 10) / 10
+}
+
 // Always visible proof of QVAC compliance: which model, where it runs, and
 // that nothing gets uploaded. Flips to an amber mock warning when the last
 // score came from the offline stand in, so the badge never overclaims.
@@ -61,6 +66,7 @@ export default function App () {
   const [loadId, setLoadId] = useState('')
 
   const [videoPath, setVideoPath] = useState(null)
+  const [clipProbe, setClipProbe] = useState(null)
   const [modelInfo, setModelInfo] = useState(DEFAULT_MODEL_INFO)
   const [scoring, setScoring] = useState(false)
   const [clipScore, setClipScore] = useState(null)
@@ -133,7 +139,15 @@ export default function App () {
       if (!picked) { emit('Video pick cancelled'); return }
       setVideoPath(picked)
       setClipScore(null)
+      setClipProbe(null)
       emit(`Picked clip: ${picked}`)
+      try {
+        const probe = await window.probable.clip.probe(picked)
+        setClipProbe(probe)
+        if (probe?.lowFps) {
+          emit(`Clip is ${roundFps(probe.fps)} fps, under ${probe.minFps} fps, scoring may be less reliable`)
+        }
+      } catch { /* the probe is advisory only, it never blocks picking or scoring */ }
     } catch (err) {
       emit(`Pick failed: ${err.message}`)
     }
@@ -265,6 +279,11 @@ export default function App () {
           Scored on the four FIFA Puskas Award criteria [the rubric FIFA uses for its own goal of the year]
         </p>
         <p style={{ margin: '4px 0' }}>Clip: {videoPath ?? '(none selected)'}</p>
+        {clipProbe?.lowFps && (
+          <p style={{ margin: '4px 0', fontSize: 12, color: '#e67e22' }}>
+            ⚠ This clip is {roundFps(clipProbe.fps)} fps, under {clipProbe.minFps} fps, so scoring may be less reliable
+          </p>
+        )}
         <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
           <button onClick={handleScoreClip} disabled={!videoPath || scoring}>

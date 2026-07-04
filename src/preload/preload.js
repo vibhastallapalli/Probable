@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('probable', {
       ipcRenderer.invoke('escrow:create', participant1, participant2, stakeAmount),
     getStatus: (escrowId) =>
       ipcRenderer.invoke('escrow:get-status', escrowId),
+    list: () => ipcRenderer.invoke('escrow:list'),
     release: (escrowId, winnerAddress) =>
       ipcRenderer.invoke('escrow:release', escrowId, winnerAddress),
   },

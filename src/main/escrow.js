@@ -92,6 +92,17 @@ async function getEscrowStatus (escrowId) {
 }
 
 /**
+ * Return every persisted escrow record. Read-only: reads the same
+ * userData/escrows.json store that createEscrow writes to and never mutates
+ * it. Balances are the last persisted values, not live on-chain reads.
+ * @returns {object[]} All stored escrow records
+ */
+function listEscrows () {
+  const store = _readEscrowStore()
+  return Object.values(store).map((record) => ({ ...record }))
+}
+
+/**
  * Send the full USDT balance of the match wallet to the winner.
  * All existing guards (double-release, participant check) are preserved.
  * @param {string} escrowId
@@ -131,4 +142,4 @@ async function releaseEscrow (escrowId, winnerAddress) {
   }
 }
 
-module.exports = { createEscrow, getEscrowStatus, releaseEscrow }
+module.exports = { createEscrow, getEscrowStatus, listEscrows, releaseEscrow }

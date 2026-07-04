@@ -19,6 +19,11 @@ function registerHandlers () {
     return escrow.getEscrowStatus(escrowId)
   })
 
+  // Read-only: returns every persisted escrow record for the saved list UI.
+  ipcMain.handle('escrow:list', () => {
+    return escrow.listEscrows()
+  })
+
   ipcMain.handle('escrow:release', (_event, escrowId, winnerAddress) => {
     return escrow.releaseEscrow(escrowId, winnerAddress)
   })

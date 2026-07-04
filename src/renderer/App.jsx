@@ -61,6 +61,7 @@ export default function App () {
   const [playerB, setPlayerB] = useState('')
   const [escrowId, setEscrowId] = useState(null)
   const [escrowRecord, setEscrowRecord] = useState(null)
+  const [escrowList, setEscrowList] = useState([])
   const [log, setLog] = useState([])
 
   const [loadId, setLoadId] = useState('')
@@ -83,7 +84,33 @@ export default function App () {
     window.probable.scoring.modelInfo()
       .then((info) => { if (info) setModelInfo(info) })
       .catch(() => { /* badge falls back to the default text */ })
+    refreshEscrowList()
   }, [])
+
+  // Pull every saved escrow from disk, newest first, so the just made one
+  // is easy to find at the top of the list.
+  async function refreshEscrowList () {
+    try {
+      const records = await window.probable.escrow.list()
+      const sorted = [...records].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      setEscrowList(sorted)
+    } catch (err) {
+      emit(`Escrow list failed: ${err.message}`)
+    }
+  }
+
+  // Shared load path used by both the Load button and a saved list row:
+  // fetch live status, then set escrowId + escrowRecord for the rest of the view.
+  async function loadEscrow (id) {
+    try {
+      const result = await window.probable.escrow.getStatus(id)
+      setEscrowId(result.id)
+      setEscrowRecord(result)
+      emit(`Loaded escrow ${result.id.slice(0, 8)}… | balance: ${result.balance} USDt | status: ${result.status}`)
+    } catch (err) {
+      emit(`Load failed: ${err.message}`)
+    }
+  }
 
   async function handleCreate () {
     if (!isValidAddress(playerA) || !isValidAddress(playerB)) {
@@ -95,6 +122,7 @@ export default function App () {
       setEscrowId(result.id)
       setEscrowRecord(result)
       emit(`Escrow created ${result.id.slice(0, 8)}… | balance: ${result.balance} USDt | status: ${result.status}`)
+      refreshEscrowList()
     } catch (err) {
       emit(`Create failed: ${err.message}`)
     }
@@ -103,14 +131,7 @@ export default function App () {
   async function handleLoad () {
     const id = loadId.trim()
     if (!id) return
-    try {
-      const result = await window.probable.escrow.getStatus(id)
-      setEscrowId(result.id)
-      setEscrowRecord(result)
-      emit(`Loaded escrow ${result.id.slice(0, 8)}… | balance: ${result.balance} USDt | status: ${result.status}`)
-    } catch (err) {
-      emit(`Load failed: ${err.message}`)
-    }
+    await loadEscrow(id)
   }
 
   async function handleRelease (winner, label) {
@@ -262,6 +283,45 @@ export default function App () {
             </>
           )}
         </div>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <strong>Saved escrows</strong>
+        <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
+          Every escrow saved on this device, newest first. Click one to load it.
+        </p>
+        {escrowList.length === 0 ? (
+          <p style={{ margin: '4px 0', fontSize: 12 }}>(none saved yet)</p>
+        ) : (
+          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {escrowList.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => loadEscrow(item.id)}
+                title={`Load ${item.id}`}
+                style={{
+                  textAlign: 'left',
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  padding: '8px 10px',
+                  background: item.id === escrowId ? '#16241a' : '#1a1d23',
+                  color: '#f2f3f5',
+                  border: `1px solid ${item.id === escrowId ? '#2ecc71' : '#444'}`,
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                }}
+              >
+                <div>
+                  <strong>{item.id.slice(0, 8)}…</strong> · {item.status}
+                  {typeof item.balance === 'number' ? ` · ${item.balance} USDt` : ''}
+                </div>
+                <div style={{ color: '#8a8f98', marginTop: 2 }}>
+                  match wallet: {item.matchWalletAddress}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       {escrowRecord && (

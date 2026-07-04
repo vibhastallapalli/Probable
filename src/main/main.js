@@ -3,7 +3,7 @@
 const path = require('path')
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') })
 
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, shell } = require('electron')
 const { initWallet } = require('./wallet')
 const { registerHandlers } = require('./ipc')
 
@@ -21,6 +21,14 @@ function createWindow () {
       nodeIntegration: false,
       sandbox: true,
     },
+  })
+
+  // Open external links (e.g. the Sepolia Etherscan payout link) in the user's
+  // default browser rather than a bare in-app window, and never let the app
+  // itself navigate away from the UI.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) shell.openExternal(url)
+    return { action: 'deny' }
   })
 
   if (isDev) {

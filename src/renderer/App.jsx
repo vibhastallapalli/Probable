@@ -190,7 +190,7 @@ export default function App () {
   async function handleRelease (winner, label) {
     try {
       const result = await window.probable.escrow.release(escrowId, winner)
-      setEscrowRecord((prev) => ({ ...prev, status: 'released', balance: 0, winner: result.winner, releasedAt: result.releasedAt }))
+      setEscrowRecord((prev) => ({ ...prev, status: result.status, balance: 0, winner: result.winner, txHash: result.txHash, releasedAt: result.releasedAt }))
       emit(`Released ${result.payout} USDt to ${label} | id: ${result.id.slice(0, 8)}…`)
     } catch (err) {
       emit(`Release failed: ${err.message}`)
@@ -259,15 +259,25 @@ export default function App () {
         emit(`Settle: unfunded, match wallet balance is ${result.balance} USDT`)
       } else if (result.outcome === 'tied') {
         emit(`Settle: tied (${result.totalA} vs ${result.totalB}), escrow untouched, needs human review`)
+      } else if (result.outcome === 'already_settled') {
+        emit(`Settle: already settled, winner ${result.winnerAddress.slice(0, 10)}… | tx: ${result.txHash}`)
       } else {
         emit(`Settle: winner ${result.winner} (${result.winnerAddress.slice(0, 10)}…) | +${result.margin}pts | ${result.payout} USDT | tx: ${result.txHash}`)
+      }
+      // Pull the post-settlement record so the escrow state area shows the
+      // settled status, winner, and payout tx hash.
+      if (result.outcome === 'settled' || result.outcome === 'already_settled') {
+        const updated = await window.probable.escrow.getStatus(escrowId)
+        setEscrowRecord(updated)
       }
     } catch (err) {
       emit(`Settle failed: ${err.message}`)
     }
   }
 
-  const released = escrowRecord?.status === 'released'
+  // Terminal state once the payout has gone out; disables further release/settle.
+  // Accepts the legacy 'released' status so older records stay locked too.
+  const settled = escrowRecord?.status === 'settled' || escrowRecord?.status === 'released'
 
   return (
     <div style={{ fontFamily: 'monospace', padding: 24, background: '#0f1115', color: '#f2f3f5', minHeight: '100vh' }}>
@@ -336,10 +346,10 @@ export default function App () {
           {escrowId && (
             <>
               <button onClick={handleRefresh}>Refresh status</button>
-              <button onClick={() => handleRelease(playerA, 'Player A')} disabled={released}>
+              <button onClick={() => handleRelease(playerA, 'Player A')} disabled={settled}>
                 Release → Player A
               </button>
-              <button onClick={() => handleRelease(playerB, 'Player B')} disabled={released}>
+              <button onClick={() => handleRelease(playerB, 'Player B')} disabled={settled}>
                 Release → Player B
               </button>
             </>
@@ -452,6 +462,25 @@ export default function App () {
       {escrowRecord && (
         <section style={{ marginBottom: 24 }}>
           <strong>Escrow state</strong>
+          {settled && (
+            <div style={{ margin: '8px 0', padding: 12, background: '#0e2418', border: '1px solid #2ecc71', borderRadius: 4, fontSize: 12 }}>
+              <div style={{ color: '#2ecc71', fontWeight: 'bold', letterSpacing: 1, marginBottom: 6 }}>● SETTLED · PAID OUT</div>
+              <div>Winner: {escrowRecord.winner ?? '(unknown)'}</div>
+              <div style={{ marginTop: 4 }}>
+                Payout tx:{' '}
+                {escrowRecord.txHash ? (
+                  <a
+                    href={`https://sepolia.etherscan.io/tx/${escrowRecord.txHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: '#5dade2', wordBreak: 'break-all' }}
+                  >
+                    {escrowRecord.txHash}
+                  </a>
+                ) : '(not recorded)'}
+              </div>
+            </div>
+          )}
           <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12 }}>
             {JSON.stringify(escrowRecord, null, 2)}
           </pre>
@@ -513,7 +542,7 @@ export default function App () {
         <div style={{ marginTop: 8 }}>
           <button
             onClick={handleSettle}
-            disabled={!escrowId || !clipScoreA || !clipScoreB || released}
+            disabled={!escrowId || !clipScoreA || !clipScoreB || settled}
           >
             Settle match
           </button>

@@ -63,6 +63,7 @@ async function createEscrow (participant1, participant2, stakeAmount) {
     status: 'locked',
     balance: 0,
     winner: null,
+    txHash: null,
     matchWalletAddress,
     createdAt: new Date().toISOString(),
     releasedAt: null
@@ -115,8 +116,11 @@ function listEscrows () {
 }
 
 /**
- * Send the full USDT balance of the match wallet to the winner.
- * All existing guards (double-release, participant check) are preserved.
+ * Send the full USDT balance of the match wallet to the winner, then keep the
+ * escrow as a settled record of the payout rather than deleting it. The stored
+ * record is updated in place with status 'settled', the winner, and the payout
+ * transaction hash. All existing guards (double-release, participant check) are
+ * preserved.
  * @param {string} escrowId
  * @param {string} winnerAddress - Must be one of the two participants
  * @returns {Promise<object>} Release summary with on-chain tx hash
@@ -125,7 +129,11 @@ async function releaseEscrow (escrowId, winnerAddress) {
   const store = _readEscrowStore()
   const record = store[escrowId]
   if (!record) throw new Error(`Escrow not found: ${escrowId}`)
-  if (record.status === 'released') throw new Error('Escrow has already been released')
+  // Double-release guard: a settled escrow has already paid out. ('released' is
+  // the legacy terminal status kept here so older records stay protected too.)
+  if (record.status === 'settled' || record.status === 'released') {
+    throw new Error('Escrow has already been settled')
+  }
 
   const winner = winnerAddress.toLowerCase()
   if (winner !== record.participant1.toLowerCase() && winner !== record.participant2.toLowerCase()) {
@@ -135,9 +143,10 @@ async function releaseEscrow (escrowId, winnerAddress) {
   const { hash, amount } = await wallet.releaseMatchWallet(escrowId, wallet.USDT_SEPOLIA, winnerAddress)
   const payout = _toUsdt(amount)
 
-  record.status = 'released'
+  record.status = 'settled'
   record.winner = winnerAddress
   record.balance = 0
+  record.txHash = hash
   record.releasedAt = new Date().toISOString()
   store[escrowId] = record
   _writeEscrowStore(store)

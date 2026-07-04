@@ -8,9 +8,10 @@ const scoring = require('./scoring')
  * wallet is funded, release the full USDT balance to that winner.
  *
  * Returns a single result object whose `outcome` is one of:
- *   'unfunded' — match wallet has no USDT yet; nothing was touched
- *   'tied'     — both clips scored identically; escrow left intact for human review
- *   'settled'  — winner determined, transfer sent, escrow released
+ *   'unfunded'        — match wallet has no USDT yet; nothing was touched
+ *   'tied'            — both clips scored identically; escrow left intact for human review
+ *   'already_settled' — escrow already paid out; the recorded result is returned, no transfer
+ *   'settled'         — winner determined, transfer sent, escrow settled
  *
  * @param {string} matchId   - Escrow ID (same key used for the match wallet)
  * @param {object} clipA     - scoreClip() result for participant A
@@ -21,6 +22,18 @@ const scoring = require('./scoring')
  */
 async function settleMatch (matchId, clipA, clipB, addressA, addressB) {
   const status = await escrow.getEscrowStatus(matchId)
+
+  // A settled escrow has already paid out. Never move money a second time —
+  // hand back the recorded winner and payout tx hash instead.
+  if (status.status === 'settled') {
+    return {
+      outcome: 'already_settled',
+      matchId,
+      winnerAddress: status.winner,
+      txHash: status.txHash,
+      releasedAt: status.releasedAt
+    }
+  }
 
   if (status.balance <= 0) {
     return {

@@ -13,7 +13,7 @@ const RUBRIC = [
 ]
 
 // Fallback so the status badge renders even before the main process replies.
-const DEFAULT_MODEL_INFO = { name: 'SmolVLM2 500M', id: '', runtime: 'QVAC' }
+const DEFAULT_MODEL_INFO = { name: 'SmolVLM2 2.2B', id: '', runtime: 'QVAC' }
 
 function isValidAddress (val) {
   return typeof val === 'string' && /^0x[0-9a-fA-F]{40}$/.test(val)
@@ -237,6 +237,11 @@ export default function App () {
       emit('Preparing on-device model… first run downloads the weights, this can take a few minutes')
       const prep = await window.probable.clip.prepareModel()
       if (!prep.alreadyLoaded && !prep.mock) emit(`Model ready: ${prep.model}`)
+      // The badge rendered before the load; re-read which model actually
+      // loaded (2.2B, or the 500M fallback when the big download fails).
+      window.probable.scoring.modelInfo()
+        .then((info) => { if (info) setModelInfo(info) })
+        .catch(() => { /* badge keeps its last known value */ })
       setPreparingModel(false)
 
       emit('Scoring clip locally via QVAC…')

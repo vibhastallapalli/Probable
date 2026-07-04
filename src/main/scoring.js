@@ -21,17 +21,53 @@ const ffmpegPath = require('ffmpeg-static')
 const ffprobePath = require('ffprobe-static').path
 
 // ---------------------------------------------------------------------------
-// Scoring prompt — tune the rubric here. Wording is loosely based on the four
-// criteria FIFA uses for its Puskás Award (best goal of the year): skill,
-// difficulty, aesthetic quality (beauty), and fair play. The four numeric
-// fields are enforced by the JSON schema below; this text steers the model to
-// judge THIS clip specifically rather than in generalities.
+// Scoring prompts — tune the rubric here. Scoring runs in two passes so the
+// model commits to what it can actually see before it judges anything:
+//
+//   Pass 1 (describe, frames attached): report only what is literally visible
+//   in the sampled frames. No opinions, no scores, no football knowledge.
+//   Pass 2 (judge, text only): score the four Puskás-style criteria from the
+//   pass-1 description alone, so every point traces back to something the
+//   model claimed to see rather than to what usually happens in highlights.
+//
+// GROUNDING_RULES rides along on every prompt sent to the model.
 // ---------------------------------------------------------------------------
-const SCORING_PROMPT = `You are judging a short football (soccer) highlight clip for a friendly wager.
-The images are ordered still frames sampled from the clip, first frame to last.
 
-Watch the play across the frames and score it on four criteria, each from 0 to 10,
-based loosely on FIFA's Puskás Award (goal of the year) criteria:
+const GROUNDING_RULES = `
+Hard rules — follow these exactly:
+- Mention only what the frames actually show. Never invent players, a
+  goalkeeper, defenders, a crowd, or anything else not visibly present.
+- Do not assume things happened between frames. If something is unclear or
+  not visible, say it is unclear instead of guessing.
+- Do not fill gaps with general football knowledge. The frames are the only
+  evidence that exists.`
+
+const DESCRIBE_PROMPT = `You are looking at ordered still frames sampled from a short football (soccer)
+clip, first frame to last. Later frames are sampled more densely because the
+shot and ball flight usually happen late in the clip.
+
+Describe only what is literally visible across the frames, in order:
+- how many people are in frame and where they are
+- the player with the ball: position, movement, and which body part touches
+  the ball in each touch you can actually see
+- the ball: where it is and how it moves from frame to frame
+- the goal, if one is visible, and whether the ball ends up in it
+- the pitch, surroundings, and camera view, briefly
+
+Write 6 to 12 short factual sentences. No opinions, no scores, no praise.
+${GROUNDING_RULES}`
+
+const JUDGE_PROMPT_PREFIX = `You are judging a short football (soccer) highlight clip for a friendly wager.
+You cannot see the clip. Your only evidence is the following literal
+description of the sampled frames, written by an observer who reported only
+what was visible:
+
+`
+
+const JUDGE_RUBRIC = `
+
+Score the play on four criteria, each from 0 to 10, based loosely on FIFA's
+Puskás Award (goal of the year) criteria:
 
 - skill: technical execution and control — first touch, dribbling, striking
   technique, body coordination, and the cleanness of the movement.
@@ -41,13 +77,17 @@ based loosely on FIFA's Puskás Award (goal of the year) criteria:
   memorable it looks as a piece of football.
 - fairPlay: sporting conduct — no dangerous, reckless, or cheating actions.
   A clean, sporting play scores high; visible fouls or unsporting behaviour
-  score low.
+  score low. If the description reports nothing unsporting, score this high.
 
-For every field write a short (one to two sentence) explanation that refers to
-what actually happens in THESE frames — the specific movement, body part,
-defenders, angle, or moment you observed. Do not give generic praise; ground
-each explanation in the visible action. This explanation will later be shown to
-the players to justify the result, so it must be concrete and specific.`
+Base every score ONLY on what the description says, not on general football
+knowledge and not on what usually happens in highlight clips. If the
+description does not mention defenders or a goalkeeper, treat them as absent
+and judge difficulty accordingly. For every field write a short (one to two
+sentence) explanation that quotes the specific movement, body part, or moment
+from the description. If the description calls something unclear, say so in
+the explanation rather than guessing. This explanation will later be shown to
+the players to justify the result, so it must be concrete and specific.
+${GROUNDING_RULES}`
 
 // JSON schema handed to llama.cpp (via responseFormat) so the model is
 // grammar-constrained to emit exactly this shape — no fragile text parsing.
@@ -78,9 +118,10 @@ const SCORE_FIELDS = ['skill', 'difficulty', 'aesthetic', 'fairPlay']
 // Frame sampling limits. 30 fps is the hard ceiling; for anything but a very
 // short clip the MAX_FRAMES cap pulls the effective rate well below that so the
 // number of images (and therefore vision tokens) stays affordable for the
-// local model's context window.
+// local model's context window. Sampling is weighted toward the second half of
+// the clip (see sampleTimestamps), where the shot and ball flight happen.
 const FPS_CEILING = 30
-const DEFAULT_MAX_FRAMES = Number(process.env.QVAC_MAX_FRAMES) || 8
+const DEFAULT_MAX_FRAMES = Number(process.env.QVAC_MAX_FRAMES) || 16
 
 // Minimum source frame rate [frames per second, fps] we consider reliable for
 // scoring. Clips under this get a visible warning in the UI but are never
@@ -88,9 +129,10 @@ const DEFAULT_MAX_FRAMES = Number(process.env.QVAC_MAX_FRAMES) || 8
 // rates [29.97 fps, which cameras label as 30] never trip a false warning.
 const MIN_CLIP_FPS = 30
 
-// Multimodal model context. Must be large enough to hold several projected
-// images plus the prompt and JSON answer.
-const MODEL_CTX_SIZE = Number(process.env.QVAC_CTX_SIZE) || 4096
+// Multimodal model context. Must be large enough to hold 16 projected frames
+// plus the describe prompt and its long text answer in a single window — 4096
+// overflowed once the frame count doubled.
+const MODEL_CTX_SIZE = Number(process.env.QVAC_CTX_SIZE) || 8192
 
 // ---------------------------------------------------------------------------
 // Frame extraction
@@ -166,17 +208,20 @@ function parseFrameRate (value) {
 }
 
 /**
- * Extract still frames from a clip at a capped rate.
+ * Extract still frames from a clip, weighted toward the second half.
  *
- * The effective sampling rate is min(FPS_CEILING, maxFrames / duration), so a
- * long clip is sampled sparsely and a short one densely, while the total frame
- * count never exceeds maxFrames.
+ * Two thirds of the frames come from the second half of the clip, where the
+ * shot and ball flight almost always happen, so the decisive moment is
+ * captured instead of mostly run-up. Frames keep the source resolution — no
+ * downscaling — so fine detail like foot-to-ball contact survives for the
+ * model's own preprocessor. Falls back to an even sweep when the duration
+ * cannot be read.
  *
  * @param {string} videoPath - Absolute path to the source video.
  * @param {object} [opts]
  * @param {number} [opts.duration] - Known duration (s); probed if omitted.
  * @param {number} [opts.maxFrames] - Hard cap on returned frames.
- * @param {number} [opts.fpsCeiling] - Upper bound on sampling fps.
+ * @param {number} [opts.fpsCeiling] - Upper bound on sampling fps (fallback path).
  * @returns {Promise<string[]>} Ordered array of extracted frame image paths.
  */
 async function extractFrames (videoPath, opts = {}) {
@@ -185,27 +230,39 @@ async function extractFrames (videoPath, opts = {}) {
   }
 
   const maxFrames = opts.maxFrames || DEFAULT_MAX_FRAMES
-  const fpsCeiling = opts.fpsCeiling || FPS_CEILING
   const duration = opts.duration || (await getVideoDuration(videoPath))
-
-  // Sampling rate: cap total frames for long clips, never exceed the ceiling.
-  let fps = fpsCeiling
-  if (duration > 0) {
-    fps = Math.min(fpsCeiling, maxFrames / duration)
-  }
-  // ffmpeg needs a positive rate; clamp to a sane floor.
-  if (!Number.isFinite(fps) || fps <= 0) fps = 1
 
   const outDir = path.join(os.tmpdir(), `probable-frames-${randomUUID()}`)
   fs.mkdirSync(outDir, { recursive: true })
 
-  await execFileAsync(ffmpegPath, [
-    '-hide_banner', '-loglevel', 'error',
-    '-i', videoPath,
-    '-vf', `fps=${fps}`,
-    '-frames:v', String(maxFrames), // extra guard against overshooting the cap
-    path.join(outDir, 'frame-%04d.png'),
-  ])
+  if (duration > 0) {
+    // One fast-seek ffmpeg call per timestamp, a few at a time. Per-timestamp
+    // extraction is what makes non-uniform sampling possible at all, and a
+    // single-frame seek is cheap enough that the batch stays fast.
+    const timestamps = sampleTimestamps(duration, maxFrames)
+    const CONCURRENCY = 4
+    for (let i = 0; i < timestamps.length; i += CONCURRENCY) {
+      await Promise.all(timestamps.slice(i, i + CONCURRENCY).map((ts, j) =>
+        execFileAsync(ffmpegPath, [
+          '-hide_banner', '-loglevel', 'error',
+          '-ss', ts.toFixed(3),
+          '-i', videoPath,
+          '-frames:v', '1',
+          path.join(outDir, `frame-${String(i + j + 1).padStart(4, '0')}.png`),
+        ])
+      ))
+    }
+  } else {
+    // Duration unreadable: even sweep at a capped rate.
+    const fpsCeiling = opts.fpsCeiling || FPS_CEILING
+    await execFileAsync(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', videoPath,
+      '-vf', `fps=${fpsCeiling}`,
+      '-frames:v', String(maxFrames), // extra guard against overshooting the cap
+      path.join(outDir, 'frame-%04d.png'),
+    ])
+  }
 
   const frames = fs.readdirSync(outDir)
     .filter((f) => f.endsWith('.png'))
@@ -219,15 +276,55 @@ async function extractFrames (videoPath, opts = {}) {
   return frames
 }
 
+/**
+ * Sampling timestamps weighted toward the second half of the clip: one third
+ * of the frames spread evenly over the first half (the run-up), two thirds
+ * over the second half (the shot, ball flight, and goal).
+ *
+ * @param {number} duration - Clip duration in seconds (> 0).
+ * @param {number} count - Total number of timestamps wanted.
+ * @returns {number[]} Ascending timestamps in seconds.
+ */
+function sampleTimestamps (duration, count) {
+  // Stop shy of the very end — a seek at or past the final frame yields nothing.
+  const end = Math.max(0, duration - Math.min(0.25, duration * 0.05))
+  if (count <= 2) {
+    return count === 1 ? [end / 2] : [0, end]
+  }
+
+  const firstCount = Math.max(1, Math.round(count / 3))
+  const secondCount = count - firstCount
+  const mid = duration / 2
+
+  // First half: even steps that stop before mid, so the halves never overlap.
+  const first = Array.from({ length: firstCount }, (_, i) => (i * mid) / firstCount)
+  // Second half: even steps from mid through the (safe) end, inclusive.
+  const second = Array.from(
+    { length: secondCount },
+    (_, i) => mid + (i * (Math.max(mid, end) - mid)) / (secondCount - 1)
+  )
+  return [...first, ...second]
+}
+
 // ---------------------------------------------------------------------------
 // Clip scoring (QVAC local inference)
 // ---------------------------------------------------------------------------
 
-// Single source of truth for the status badge in the renderer. Keep in step
-// with the modelSrc used in getModel below so the badge never lies on camera.
+// Primary judge model: SmolVLM2 2.2B, the largest SmolVLM2 variant. The QVAC
+// registry only carries the 500M build, so the 2.2B weights come through the
+// SDK's HTTP model source from the official ggml-org conversion, pinned to a
+// fixed revision. The network policy is unchanged: one-time download into
+// QVAC's on-disk cache, then fully local llama.cpp inference — exactly how the
+// registry constants resolve too.
+const SMOLVLM2_2_2B_BASE =
+  'https://huggingface.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF/resolve/1bc3c9f74ceafd4c8d4411cc9cf188bba3798f91'
+
+// Live facts for the status badge in the renderer. Starts as the model we
+// intend to load; getModel overwrites name/id with whichever candidate
+// actually loaded, so the badge never lies on camera.
 const MODEL_INFO = {
-  name: 'SmolVLM2 500M',
-  id: 'SMOLVLM2_500M_MULTIMODAL_Q8_0',
+  name: 'SmolVLM2 2.2B',
+  id: 'SMOLVLM2_2_2B_INSTRUCT_Q8_0',
   runtime: 'QVAC',
 }
 
@@ -239,24 +336,63 @@ async function getModel (onProgress) {
   if (_qvac) return _qvac
 
   const sdk = await import('@qvac/sdk')
-  const modelId = await sdk.loadModel({
-    modelSrc: sdk.SMOLVLM2_500M_MULTIMODAL_Q8_0,
-    modelConfig: {
-      ctx_size: MODEL_CTX_SIZE,
-      projectionModelSrc: sdk.MMPROJ_SMOLVLM2_500M_MULTIMODAL_Q8_0,
-    },
-    onProgress: (p) => {
-      if (p && typeof p.percentage === 'number') {
-        console.log(`[qvac] loading model ${p.percentage.toFixed(0)}%`)
-        if (typeof onProgress === 'function') {
-          try { onProgress(p) } catch { /* progress reporting is best-effort */ }
-        }
-      }
-    },
-  })
 
-  _qvac = { sdk, modelId }
-  return _qvac
+  // Load order: 2.2B first for judgment quality, 500M registry build as the
+  // fallback so a failed 2.2B download degrades scoring instead of breaking
+  // it. QVAC_FORCE_500M=1 skips the big model (useful on low-RAM machines).
+  const candidates = [
+    {
+      name: 'SmolVLM2 2.2B',
+      id: 'SMOLVLM2_2_2B_INSTRUCT_Q8_0',
+      loadOptions: {
+        modelSrc: `${SMOLVLM2_2_2B_BASE}/SmolVLM2-2.2B-Instruct-Q8_0.gguf`,
+        // URL sources carry no registry metadata, so the engine is explicit.
+        modelType: 'llamacpp-completion',
+        modelConfig: {
+          ctx_size: MODEL_CTX_SIZE,
+          projectionModelSrc: `${SMOLVLM2_2_2B_BASE}/mmproj-SmolVLM2-2.2B-Instruct-Q8_0.gguf`,
+        },
+      },
+    },
+    {
+      name: 'SmolVLM2 500M',
+      id: 'SMOLVLM2_500M_MULTIMODAL_Q8_0',
+      loadOptions: {
+        modelSrc: sdk.SMOLVLM2_500M_MULTIMODAL_Q8_0,
+        modelConfig: {
+          ctx_size: MODEL_CTX_SIZE,
+          projectionModelSrc: sdk.MMPROJ_SMOLVLM2_500M_MULTIMODAL_Q8_0,
+        },
+      },
+    },
+  ]
+  if (process.env.QVAC_FORCE_500M === '1') candidates.shift()
+
+  let lastError
+  for (const candidate of candidates) {
+    try {
+      const modelId = await sdk.loadModel({
+        ...candidate.loadOptions,
+        onProgress: (p) => {
+          if (p && typeof p.percentage === 'number') {
+            console.log(`[qvac] loading ${candidate.name} ${p.percentage.toFixed(0)}%`)
+            if (typeof onProgress === 'function') {
+              try { onProgress(p) } catch { /* progress reporting is best-effort */ }
+            }
+          }
+        },
+      })
+      MODEL_INFO.name = candidate.name
+      MODEL_INFO.id = candidate.id
+      console.log(`[qvac] loaded model: ${candidate.name} (${candidate.id})`)
+      _qvac = { sdk, modelId }
+      return _qvac
+    } catch (err) {
+      lastError = err
+      console.warn(`[qvac] failed to load ${candidate.name}: ${err.message}`)
+    }
+  }
+  throw lastError
 }
 
 /**
@@ -283,6 +419,11 @@ async function prepareModel (onProgress) {
 /**
  * Score a clip's frames on the four Puskás-style criteria via the local model.
  *
+ * Two passes: the model first describes what is literally visible in the
+ * frames, then scores the four criteria from that description alone. Judging
+ * from its own literal account keeps the score anchored to what is actually
+ * in the clip instead of what usually happens in football highlights.
+ *
  * @param {string[]} frames - Ordered frame image paths from extractFrames().
  * @param {object} [metadata]
  * @param {number} [metadata.duration] - Clip duration in seconds.
@@ -307,28 +448,55 @@ async function scoreClip (frames, metadata = {}) {
     ? `\nClip duration: ${metadata.duration.toFixed(1)}s across ${frames.length} sampled frames.`
     : `\n${frames.length} sampled frames.`
 
-  const history = [
-    {
+  // Pass 1 — describe. Frames attached, free text out.
+  const description = (await runCompletion(sdk, modelId, {
+    history: [{
       role: 'user',
-      content: SCORING_PROMPT + durationLine,
+      content: DESCRIBE_PROMPT + durationLine,
       attachments: frames.map((p) => ({ path: p })),
-    },
-  ]
+    }],
+  })).trim()
+  if (!description) {
+    throw new Error('Model returned an empty frame description')
+  }
+  console.log(`[qvac] clip description:\n${description}`)
 
-  const run = sdk.completion({
-    modelId,
-    history,
-    stream: false,
+  // Pass 2 — judge from the description alone (no frames), grammar-constrained
+  // to the score schema.
+  const judged = await runCompletion(sdk, modelId, {
+    history: [{
+      role: 'user',
+      content: JUDGE_PROMPT_PREFIX + description + JUDGE_RUBRIC,
+    }],
     responseFormat: {
       type: 'json_schema',
       json_schema: { name: 'clip_score', schema: SCORE_SCHEMA },
     },
   })
 
-  // The worker accumulates KV cache across completion() calls on the same
-  // modelId. Without clearing it, the second clip's prompt stacks on top of
-  // the first clip's context and overflows the 4096-token window. Clear after
-  // every call (success or failure) so each clip scores against a clean slate.
+  const parsed = parseScore(judged)
+
+  return finalizeScore(parsed, {
+    frameCount: frames.length,
+    duration: metadata.duration || 0,
+    model: MODEL_INFO.id,
+    mock: false,
+  })
+}
+
+// Run one completion call and return the assistant text. The worker
+// accumulates KV cache across completion() calls on the same modelId; without
+// clearing it, the next call's prompt stacks on top of the previous context
+// and overflows the window. Clear after every call (success or failure) so
+// each pass and each clip starts from a clean slate.
+async function runCompletion (sdk, modelId, { history, responseFormat }) {
+  const run = sdk.completion({
+    modelId,
+    history,
+    stream: false,
+    ...(responseFormat ? { responseFormat } : {}),
+  })
+
   let final
   try {
     final = await run.final
@@ -338,14 +506,7 @@ async function scoreClip (frames, metadata = {}) {
 
   // QVAC's CompletionFinal exposes the assistant text as `contentText`
   // (with the unparsed original at `raw.fullText`).
-  const parsed = parseScore(final.contentText ?? final.raw?.fullText ?? '')
-
-  return finalizeScore(parsed, {
-    frameCount: frames.length,
-    duration: metadata.duration || 0,
-    model: MODEL_INFO.id,
-    mock: false,
-  })
+  return String(final.contentText ?? final.raw?.fullText ?? '')
 }
 
 /**
@@ -444,7 +605,9 @@ function mockScore (frames, metadata) {
 }
 
 module.exports = {
-  SCORING_PROMPT,
+  DESCRIBE_PROMPT,
+  JUDGE_PROMPT_PREFIX,
+  JUDGE_RUBRIC,
   MODEL_INFO,
   MIN_CLIP_FPS,
   extractFrames,

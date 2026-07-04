@@ -17,10 +17,16 @@ const TARGET = path.join(
   'dist', 'client', 'rpc', 'node-rpc-client.js',
 );
 
-const OLD_LINE = 'const RPC_INIT_TIMEOUT_MS = 30_000;';
-// 5 minutes — comfortably longer than a first-run download on a slow connection.
-// Underscore separator matches the SDK's own numeric style.
-const NEW_LINE = 'const RPC_INIT_TIMEOUT_MS = 300_000;';
+// Both the SDK's stock value and our previous 5-minute patch get rewritten, so
+// re-running after an npm install or over an already-patched tree both work.
+const OLD_LINES = [
+  'const RPC_INIT_TIMEOUT_MS = 30_000;',
+  'const RPC_INIT_TIMEOUT_MS = 300_000;',
+];
+// 20 minutes — the judge model is now SmolVLM2 2.2B (~2.4 GB with its
+// projector, ~4x the old 500M download), so the first-run window scales with
+// it. Underscore separator matches the SDK's own numeric style.
+const NEW_LINE = 'const RPC_INIT_TIMEOUT_MS = 1_200_000;';
 
 try {
   if (!fs.existsSync(TARGET)) process.exit(0);
@@ -29,14 +35,15 @@ try {
 
   if (src.includes(NEW_LINE)) process.exit(0); // already patched
 
-  if (!src.includes(OLD_LINE)) {
+  const oldLine = OLD_LINES.find((line) => src.includes(line));
+  if (!oldLine) {
     // Constant moved or was renamed in a newer SDK — leave it untouched and stay
     // silent; the model prewarm step still mitigates the first-run race.
     process.exit(0);
   }
 
-  fs.writeFileSync(TARGET, src.replace(OLD_LINE, NEW_LINE));
-  console.log('[patch-qvac-timeout] RPC worker init timeout raised to 300000ms.');
+  fs.writeFileSync(TARGET, src.replace(oldLine, NEW_LINE));
+  console.log('[patch-qvac-timeout] RPC worker init timeout raised to 1200000ms.');
 } catch (err) {
   if (process.env.DEBUG_PATCH_QVAC) console.error('[patch-qvac-timeout]', err);
   // Intentionally silent — never block a working install.

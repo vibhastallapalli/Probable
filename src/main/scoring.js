@@ -325,7 +325,17 @@ async function scoreClip (frames, metadata = {}) {
     },
   })
 
-  const final = await run.final
+  // The worker accumulates KV cache across completion() calls on the same
+  // modelId. Without clearing it, the second clip's prompt stacks on top of
+  // the first clip's context and overflows the 4096-token window. Clear after
+  // every call (success or failure) so each clip scores against a clean slate.
+  let final
+  try {
+    final = await run.final
+  } finally {
+    try { await sdk.deleteCache({ all: true }) } catch { /* best-effort; model stays loaded */ }
+  }
+
   // QVAC's CompletionFinal exposes the assistant text as `contentText`
   // (with the unparsed original at `raw.fullText`).
   const parsed = parseScore(final.contentText ?? final.raw?.fullText ?? '')

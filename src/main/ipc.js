@@ -24,6 +24,11 @@ function registerHandlers () {
     return escrow.listEscrows()
   })
 
+  // Remove local records by id array. No on-chain effect.
+  ipcMain.handle('escrow:delete', (_event, ids) => {
+    return escrow.deleteEscrows(ids)
+  })
+
   ipcMain.handle('escrow:release', (_event, escrowId, winnerAddress) => {
     return escrow.releaseEscrow(escrowId, winnerAddress)
   })

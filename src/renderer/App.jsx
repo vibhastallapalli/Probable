@@ -62,6 +62,8 @@ export default function App () {
   const [escrowId, setEscrowId] = useState(null)
   const [escrowRecord, setEscrowRecord] = useState(null)
   const [escrowList, setEscrowList] = useState([])
+  const [deleteMode, setDeleteMode] = useState(false)
+  const [deleteSelected, setDeleteSelected] = useState(new Set())
   const [log, setLog] = useState([])
 
   const [loadId, setLoadId] = useState('')
@@ -128,6 +130,38 @@ export default function App () {
       emit(`Loaded escrow ${result.id.slice(0, 8)}… | balance: ${result.balance} USDt | status: ${result.status}`)
     } catch (err) {
       emit(`Load failed: ${err.message}`)
+    }
+  }
+
+  function toggleDeleteMode () {
+    setDeleteMode((prev) => !prev)
+    setDeleteSelected(new Set())
+  }
+
+  function toggleDeleteSelect (id) {
+    setDeleteSelected((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  async function handleDeleteSelected () {
+    const ids = [...deleteSelected]
+    if (ids.length === 0) return
+    try {
+      await window.probable.escrow.delete(ids)
+      emit(`Deleted ${ids.length} escrow${ids.length > 1 ? 's' : ''}`)
+      // If the currently loaded escrow was among the deleted ones, clear the view.
+      if (ids.includes(escrowId)) {
+        setEscrowId(null)
+        setEscrowRecord(null)
+      }
+      setDeleteMode(false)
+      setDeleteSelected(new Set())
+      refreshEscrowList()
+    } catch (err) {
+      emit(`Delete failed: ${err.message}`)
     }
   }
 
@@ -314,40 +348,103 @@ export default function App () {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <strong>Saved escrows</strong>
-        <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
-          Every escrow saved on this device, newest first. Click one to load it.
-        </p>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <strong>Saved escrows</strong>
+          {escrowList.length > 0 && (
+            <button
+              onClick={toggleDeleteMode}
+              style={{
+                fontSize: 11,
+                padding: '3px 10px',
+                background: deleteMode ? '#2a1c0e' : 'transparent',
+                color: deleteMode ? '#e67e22' : '#8a8f98',
+                border: `1px solid ${deleteMode ? '#e67e22' : '#444'}`,
+                borderRadius: 4,
+                cursor: 'pointer',
+              }}
+            >
+              {deleteMode ? 'Cancel' : 'Delete'}
+            </button>
+          )}
+        </div>
+
+        {deleteMode && (
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              onClick={handleDeleteSelected}
+              disabled={deleteSelected.size === 0}
+              style={{
+                fontSize: 12,
+                padding: '4px 14px',
+                background: deleteSelected.size > 0 ? '#3d1515' : '#1a1d23',
+                color: deleteSelected.size > 0 ? '#e74c3c' : '#555',
+                border: `1px solid ${deleteSelected.size > 0 ? '#e74c3c' : '#333'}`,
+                borderRadius: 4,
+                cursor: deleteSelected.size > 0 ? 'pointer' : 'default',
+              }}
+            >
+              Delete {deleteSelected.size > 0 ? `(${deleteSelected.size})` : ''}
+            </button>
+            <span style={{ fontSize: 11, color: '#8a8f98' }}>
+              {deleteSelected.size === 0 ? 'Select escrows to delete' : `${deleteSelected.size} selected`}
+            </span>
+          </div>
+        )}
+
         {escrowList.length === 0 ? (
-          <p style={{ margin: '4px 0', fontSize: 12 }}>(none saved yet)</p>
+          <p style={{ margin: '8px 0 0', fontSize: 12 }}>(none saved yet)</p>
         ) : (
           <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {escrowList.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => loadEscrow(item.id)}
-                title={`Load ${item.id}`}
-                style={{
-                  textAlign: 'left',
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  padding: '8px 10px',
-                  background: item.id === escrowId ? '#16241a' : '#1a1d23',
-                  color: '#f2f3f5',
-                  border: `1px solid ${item.id === escrowId ? '#2ecc71' : '#444'}`,
-                  borderRadius: 4,
-                  cursor: 'pointer',
-                }}
-              >
-                <div>
-                  <strong>{item.id.slice(0, 8)}…</strong> · {item.status}
-                  {typeof item.balance === 'number' ? ` · ${item.balance} USDt` : ''}
+            {escrowList.map((item) => {
+              const isLoaded = item.id === escrowId
+              const isChecked = deleteSelected.has(item.id)
+              return (
+                <div
+                  key={item.id}
+                  onClick={() => deleteMode ? toggleDeleteSelect(item.id) : loadEscrow(item.id)}
+                  title={deleteMode ? (isChecked ? 'Deselect' : 'Select for deletion') : `Load ${item.id}`}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    padding: '8px 10px',
+                    background: isChecked ? '#2a1515' : isLoaded ? '#16241a' : '#1a1d23',
+                    color: '#f2f3f5',
+                    border: `1px solid ${isChecked ? '#e74c3c' : isLoaded ? '#2ecc71' : '#444'}`,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                  }}
+                >
+                  {deleteMode && (
+                    <div style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: 3,
+                      border: `1.5px solid ${isChecked ? '#e74c3c' : '#666'}`,
+                      background: isChecked ? '#e74c3c' : 'transparent',
+                      flexShrink: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}>
+                      {isChecked && <span style={{ color: '#fff', fontSize: 10, lineHeight: 1 }}>✓</span>}
+                    </div>
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div>
+                      <strong>{item.id.slice(0, 8)}…</strong> · {item.status}
+                      {typeof item.balance === 'number' ? ` · ${item.balance} USDt` : ''}
+                    </div>
+                    <div style={{ color: '#8a8f98', marginTop: 2 }}>
+                      match wallet: {item.matchWalletAddress}
+                    </div>
+                  </div>
                 </div>
-                <div style={{ color: '#8a8f98', marginTop: 2 }}>
-                  match wallet: {item.matchWalletAddress}
-                </div>
-              </button>
-            ))}
+              )
+            })}
           </div>
         )}
       </section>

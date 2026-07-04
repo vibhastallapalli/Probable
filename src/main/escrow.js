@@ -92,6 +92,18 @@ async function getEscrowStatus (escrowId) {
 }
 
 /**
+ * Remove one or more escrow records from the store by id.
+ * Does not touch any on-chain state — purely a local record removal.
+ * @param {string[]} ids
+ */
+function deleteEscrows (ids) {
+  const set = new Set(ids)
+  const store = _readEscrowStore()
+  for (const id of set) delete store[id]
+  _writeEscrowStore(store)
+}
+
+/**
  * Return every persisted escrow record. Read-only: reads the same
  * userData/escrows.json store that createEscrow writes to and never mutates
  * it. Balances are the last persisted values, not live on-chain reads.
@@ -142,4 +154,4 @@ async function releaseEscrow (escrowId, winnerAddress) {
   }
 }
 
-module.exports = { createEscrow, getEscrowStatus, listEscrows, releaseEscrow }
+module.exports = { createEscrow, getEscrowStatus, listEscrows, deleteEscrows, releaseEscrow }

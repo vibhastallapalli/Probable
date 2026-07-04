@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('probable', {
     getStatus: (escrowId) =>
       ipcRenderer.invoke('escrow:get-status', escrowId),
     list: () => ipcRenderer.invoke('escrow:list'),
+    delete: (ids) => ipcRenderer.invoke('escrow:delete', ids),
     release: (escrowId, winnerAddress) =>
       ipcRenderer.invoke('escrow:release', escrowId, winnerAddress),
   },

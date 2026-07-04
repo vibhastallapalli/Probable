@@ -28,8 +28,15 @@ contextBridge.exposeInMainWorld('probable', {
   clip: {
     pickVideo: () => ipcRenderer.invoke('clip:pick-video'),
     probe: (videoPath) => ipcRenderer.invoke('clip:probe', videoPath),
+    prepareModel: () => ipcRenderer.invoke('clip:prepare-model'),
     score: (videoPath) => ipcRenderer.invoke('clip:score', videoPath),
     compare: (clipA, clipB) => ipcRenderer.invoke('clip:compare', clipA, clipB),
+    // Subscribe to model download/load progress. Returns an unsubscribe fn.
+    onModelProgress: (callback) => {
+      const listener = (_event, progress) => callback(progress)
+      ipcRenderer.on('clip:model-progress', listener)
+      return () => ipcRenderer.removeListener('clip:model-progress', listener)
+    },
   },
 
   scoring: {

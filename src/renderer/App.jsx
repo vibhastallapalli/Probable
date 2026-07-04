@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 
 const STAKE = 100
 
@@ -69,6 +69,7 @@ export default function App () {
   const [videoPath, setVideoPath] = useState(null)
   const [clipProbe, setClipProbe] = useState(null)
   const [modelInfo, setModelInfo] = useState(DEFAULT_MODEL_INFO)
+  const [preparingModel, setPreparingModel] = useState(false)
   const [scoring, setScoring] = useState(false)
   const [clipScore, setClipScore] = useState(null)
   const [clipScoreA, setClipScoreA] = useState(null)
@@ -76,6 +77,10 @@ export default function App () {
   const [settleResult, setSettleResult] = useState(null)
 
   const emit = (msg) => setLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev])
+
+  // Last logged download decile, so streaming progress logs at most once per 10%
+  // instead of flooding the Log with every percentage tick.
+  const lastModelPctRef = useRef(-1)
 
   useEffect(() => {
     window.probable.wallet.getAddress()
@@ -85,6 +90,20 @@ export default function App () {
       .then((info) => { if (info) setModelInfo(info) })
       .catch(() => { /* badge falls back to the default text */ })
     refreshEscrowList()
+  }, [])
+
+  // Stream the one-time model download/load progress into the Log, throttled to
+  // one line per 10% so the user can watch the download instead of a silent wait.
+  useEffect(() => {
+    const unsubscribe = window.probable.clip.onModelProgress((p) => {
+      if (!p || typeof p.percentage !== 'number') return
+      const bucket = Math.floor(p.percentage / 10) * 10
+      if (bucket !== lastModelPctRef.current) {
+        lastModelPctRef.current = bucket
+        emit(`Downloading on-device model… ${bucket}%`)
+      }
+    })
+    return unsubscribe
   }, [])
 
   // Pull every saved escrow from disk, newest first, so the just made one
@@ -177,14 +196,23 @@ export default function App () {
   async function handleScoreClip () {
     if (!videoPath) return
     setScoring(true)
-    emit('Scoring clip locally via QVAC… (first run downloads the model)')
     try {
+      // One-time model download / warm-up first, so scoring never races the
+      // worker init timeout on first run. A no-op once the model is loaded.
+      setPreparingModel(true)
+      emit('Preparing on-device model… first run downloads the weights, this can take a few minutes')
+      const prep = await window.probable.clip.prepareModel()
+      if (!prep.alreadyLoaded && !prep.mock) emit(`Model ready: ${prep.model}`)
+      setPreparingModel(false)
+
+      emit('Scoring clip locally via QVAC…')
       const result = await window.probable.clip.score(videoPath)
       setClipScore(result)
       emit(`Scored: total ${result.total} of 40 from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
     } catch (err) {
       emit(`Score failed: ${err.message}`)
     } finally {
+      setPreparingModel(false)
       setScoring(false)
     }
   }
@@ -347,7 +375,7 @@ export default function App () {
         <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
           <button onClick={handleScoreClip} disabled={!videoPath || scoring}>
-            {scoring ? 'Scoring…' : 'Run scoreClip'}
+            {scoring ? (preparingModel ? 'Preparing model…' : 'Scoring…') : 'Run scoreClip'}
           </button>
         </div>
 

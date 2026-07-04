@@ -52,6 +52,15 @@ function registerHandlers () {
     return scoring.probeVideo(videoPath)
   })
 
+  // One-time model warm-up before the first scoreClip. Streams download/load
+  // progress back to the calling renderer on 'clip:model-progress' so the Log
+  // shows the download instead of a silent wait, then resolves when ready.
+  ipcMain.handle('clip:prepare-model', (event) => {
+    return scoring.prepareModel((p) => {
+      event.sender.send('clip:model-progress', p)
+    })
+  })
+
   // Full local pipeline: probe → extract frames → score via QVAC.
   ipcMain.handle('clip:score', async (_event, videoPath) => {
     const { duration, fps, lowFps } = await scoring.probeVideo(videoPath)

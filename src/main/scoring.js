@@ -235,7 +235,7 @@ const MODEL_INFO = {
 // into memory (and downloads it on first ever use), so we do it once and reuse.
 let _qvac = null
 
-async function getModel () {
+async function getModel (onProgress) {
   if (_qvac) return _qvac
 
   const sdk = await import('@qvac/sdk')
@@ -248,12 +248,36 @@ async function getModel () {
     onProgress: (p) => {
       if (p && typeof p.percentage === 'number') {
         console.log(`[qvac] loading model ${p.percentage.toFixed(0)}%`)
+        if (typeof onProgress === 'function') {
+          try { onProgress(p) } catch { /* progress reporting is best-effort */ }
+        }
       }
     },
   })
 
   _qvac = { sdk, modelId }
   return _qvac
+}
+
+/**
+ * One-time model warm-up. Pulls the weights into QVAC's on-disk cache and loads
+ * the model into memory BEFORE the first scoreClip, so the one-time first-run
+ * download cannot race the worker's init timeout and fail with RPC_INIT_TIMEOUT.
+ * Idempotent: after the first successful load it returns immediately without
+ * re-downloading.
+ *
+ * @param {(p: {percentage: number}) => void} [onProgress] - Download/load
+ *   progress, forwarded so the UI can show it instead of a silent wait.
+ * @returns {Promise<{ready: boolean, alreadyLoaded: boolean, model: string, mock?: boolean}>}
+ */
+async function prepareModel (onProgress) {
+  // Mock mode never touches the real model, so warm-up is a no-op.
+  if (process.env.QVAC_MOCK_SCORING === '1') {
+    return { ready: true, alreadyLoaded: true, model: 'mock', mock: true }
+  }
+  const alreadyLoaded = _qvac !== null
+  await getModel(onProgress)
+  return { ready: true, alreadyLoaded, model: MODEL_INFO.id }
 }
 
 /**
@@ -416,6 +440,7 @@ module.exports = {
   extractFrames,
   getVideoDuration,
   probeVideo,
+  prepareModel,
   scoreClip,
   compareClips,
 }

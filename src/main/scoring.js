@@ -653,6 +653,12 @@ async function scoreClip (frames, metadata = {}) {
 
   const { sdk, modelId } = await getModel()
 
+  // Start every clip from a clean KV cache. runCompletion clears after each
+  // call, but if a previous clip's final clear ever failed silently, this
+  // guarantees the describe pass here does not inherit that leftover context
+  // and overflow the window partway through a batch.
+  await clearCache(sdk)
+
   const durationLine = metadata.duration
     ? `\nClip duration: ${metadata.duration.toFixed(1)}s across ${frames.length} sampled frames.`
     : `\n${frames.length} sampled frames.`
@@ -700,6 +706,25 @@ async function scoreClip (frames, metadata = {}) {
   })
 }
 
+// Wipe the worker's KV cache. The worker accumulates KV cache across
+// completion() calls on the same modelId; without clearing it the next
+// prompt stacks on top of the previous context and eventually overflows the
+// window. deleteCache can report failure through a { success: false } RESULT
+// without throwing, so a bare try/catch that only guards against a thrown
+// error would treat a silently-failed clear as a success — exactly how
+// context creeps across clips until one overflows. Check the flag and log a
+// real failure instead of assuming the cache is clean.
+async function clearCache (sdk) {
+  try {
+    const res = await sdk.deleteCache({ all: true })
+    if (res && res.success === false) {
+      console.warn(`[qvac] deleteCache reported failure: ${res.error || 'unknown'}`)
+    }
+  } catch (err) {
+    console.warn(`[qvac] deleteCache threw: ${err.message}`)
+  }
+}
+
 // Run one completion call and return the assistant text. The worker
 // accumulates KV cache across completion() calls on the same modelId; without
 // clearing it, the next call's prompt stacks on top of the previous context
@@ -714,7 +739,15 @@ async function runCompletion (sdk, modelId, { history, responseFormat }) {
     // get the same score when money settles on it, and at the default
     // temperature the spatial answers were observed to flip between
     // identical calls.
-    generationParams: { temp: 0 },
+    //
+    // predict caps the tokens generated per pass so a dark / low-signal clip
+    // (e.g. a night shot) cannot send the greedy describe pass into an endless
+    // repetition loop that fills the whole context window and dies with a
+    // CONTEXT_OVERFLOW. repeat_penalty discourages that loop from starting.
+    // An honest description is 8-14 sentences (~350 tokens); 768 leaves room
+    // for the judge's three explanations while still capping a runaway well
+    // short of the 16k ceiling.
+    generationParams: { temp: 0, predict: 768, repeat_penalty: 1.15 },
     ...(responseFormat ? { responseFormat } : {}),
   })
 
@@ -722,7 +755,7 @@ async function runCompletion (sdk, modelId, { history, responseFormat }) {
   try {
     final = await run.final
   } finally {
-    try { await sdk.deleteCache({ all: true }) } catch { /* best-effort; model stays loaded */ }
+    await clearCache(sdk)
   }
 
   // QVAC's CompletionFinal exposes the assistant text as `contentText`

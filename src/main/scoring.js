@@ -51,7 +51,9 @@ Describe only what is literally visible across the frames, in order:
 - the player with the ball: position, movement, and which body part touches
   the ball in each touch you can actually see
 - the ball: where it is and how it moves from frame to frame
-- the goal, if one is visible, and whether the ball ends up in it
+- the goal, if one is visible, whether the ball ends up in it, and where in
+  the goal frame it crosses in — which corner or region (for example top left
+  corner, top right corner, mid-height right, low centre)
 - the pitch, surroundings, and camera view, briefly
 
 Write 6 to 12 short factual sentences. No opinions, no scores, no praise.
@@ -67,7 +69,7 @@ what was visible:
 const JUDGE_RUBRIC = `
 
 Score the play on four criteria, each from 0 to 10, based loosely on FIFA's
-Puskás Award (goal of the year) criteria:
+Puskás Award (goal of the year) criteria, with placement in place of fair play:
 
 - skill: technical execution and control — first touch, dribbling, striking
   technique, body coordination, and the cleanness of the movement.
@@ -75,18 +77,22 @@ Puskás Award (goal of the year) criteria:
   from defenders, body position, speed, and improvisation required.
 - aesthetic: the visual beauty and spectacle of the play — how impressive or
   memorable it looks as a piece of football.
-- fairPlay: sporting conduct — no dangerous, reckless, or cheating actions.
-  A clean, sporting play scores high; visible fouls or unsporting behaviour
-  score low. If the description reports nothing unsporting, score this high.
+- placement: where the ball crosses into the goal. Top corners score highest
+  as the hardest, most skillful targets; mid-height shots to either side score
+  mid-range; central or low-central placements score lowest as the easiest to
+  reach. If the description does not say where the ball entered the goal, or
+  no goal is described, score placement low and say the placement was unclear.
 
 Base every score ONLY on what the description says, not on general football
 knowledge and not on what usually happens in highlight clips. If the
 description does not mention defenders or a goalkeeper, treat them as absent
 and judge difficulty accordingly. For every field write a short (one to two
 sentence) explanation that quotes the specific movement, body part, or moment
-from the description. If the description calls something unclear, say so in
-the explanation rather than guessing. This explanation will later be shown to
-the players to justify the result, so it must be concrete and specific.
+from the description. For placement, state which part of the goal the ball
+entered (for example, top left corner). If the description calls something
+unclear, say so in the explanation rather than guessing. This explanation will
+later be shown to the players to justify the result, so it must be concrete
+and specific.
 ${GROUNDING_RULES}`
 
 // JSON schema handed to llama.cpp (via responseFormat) so the model is
@@ -107,13 +113,13 @@ const SCORE_SCHEMA = {
     skill: scoreField,
     difficulty: scoreField,
     aesthetic: scoreField,
-    fairPlay: scoreField,
+    placement: scoreField,
   },
-  required: ['skill', 'difficulty', 'aesthetic', 'fairPlay'],
+  required: ['skill', 'difficulty', 'aesthetic', 'placement'],
   additionalProperties: false,
 }
 
-const SCORE_FIELDS = ['skill', 'difficulty', 'aesthetic', 'fairPlay']
+const SCORE_FIELDS = ['skill', 'difficulty', 'aesthetic', 'placement']
 
 // Frame sampling limits. 30 fps is the hard ceiling; for anything but a very
 // short clip the MAX_FRAMES cap pulls the effective rate well below that so the
@@ -428,7 +434,7 @@ async function prepareModel (onProgress) {
  * @param {object} [metadata]
  * @param {number} [metadata.duration] - Clip duration in seconds.
  * @returns {Promise<object>} Structured score:
- *   { scores: { skill:{score,explanation}, difficulty, aesthetic, fairPlay },
+ *   { scores: { skill:{score,explanation}, difficulty, aesthetic, placement },
  *     total, frameCount, duration, model, mock }
  */
 async function scoreClip (frames, metadata = {}) {

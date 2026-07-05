@@ -9,7 +9,7 @@ const RUBRIC = [
   { key: 'skill', label: 'Skill', gloss: 'clean technique and ball control' },
   { key: 'difficulty', label: 'Difficulty', gloss: 'how hard the play was to pull off' },
   { key: 'aesthetic', label: 'Aesthetic', gloss: 'how spectacular it looks' },
-  { key: 'fairPlay', label: 'Fair play', gloss: 'clean sporting conduct' },
+  { key: 'placement', label: 'Placement', gloss: 'where in the goal the shot lands' },
 ]
 
 // Fallback so the status badge renders even before the main process replies.

@@ -51,9 +51,11 @@ Describe only what is literally visible across the frames, in order:
 - the player with the ball: position, movement, and which body part touches
   the ball in each touch you can actually see
 - the ball: where it is and how it moves from frame to frame
-- the goal, if one is visible, whether the ball ends up in it, and where in
-  the goal frame it crosses in — which corner or region (for example top left
-  corner, top right corner, mid-height right, low centre)
+- the goal, if one is visible, and whether the ball ends up in it. If it
+  does, mentally split the goal mouth into 3 rows (top, middle, bottom) and
+  3 columns (left, center, right), using the crossbar and both goalposts as
+  reference lines, and name which one of those 9 cells the ball crosses into
+  (for example top left, mid right, bottom center)
 - the pitch, surroundings, and camera view, briefly
 
 Write 6 to 12 short factual sentences. No opinions, no scores, no praise.
@@ -68,8 +70,10 @@ what was visible:
 
 const JUDGE_RUBRIC = `
 
-Score the play on four criteria, each from 0 to 10, based loosely on FIFA's
-Puskás Award (goal of the year) criteria, with placement in place of fair play:
+Judge the play on four criteria, based loosely on FIFA's Puskás Award (goal
+of the year) criteria, with placement in place of fair play.
+
+Score each of these three from 0 to 10:
 
 - skill: technical execution and control — first touch, dribbling, striking
   technique, body coordination, and the cleanness of the movement.
@@ -77,23 +81,52 @@ Puskás Award (goal of the year) criteria, with placement in place of fair play:
   from defenders, body position, speed, and improvisation required.
 - aesthetic: the visual beauty and spectacle of the play — how impressive or
   memorable it looks as a piece of football.
-- placement: where the ball crosses into the goal. Top corners score highest
-  as the hardest, most skillful targets; mid-height shots to either side score
-  mid-range; central or low-central placements score lowest as the easiest to
-  reach. If the description does not say where the ball entered the goal, or
-  no goal is described, score placement low and say the placement was unclear.
 
-Base every score ONLY on what the description says, not on general football
-knowledge and not on what usually happens in highlight clips. If the
+For placement, do NOT give a number. Instead classify where the ball crossed
+into the goal. Mentally split the goal mouth into 3 rows (top, middle,
+bottom) and 3 columns (left, center, right), using the crossbar and both
+goalposts as reference lines, and pick which one of the 9 cells the ball
+crossed into: top_left, top_center, top_right, mid_left, mid_center,
+mid_right, bottom_left, bottom_center, or bottom_right. Give the zone FIRST,
+then the explanation — the explanation must justify why the ball's position
+relative to the crossbar and goalposts puts it in that zone. If the
+description does not say where the ball entered the goal, or no goal is
+described, pick bottom_center and say the placement was unclear in the
+explanation.
+
+Base every judgment ONLY on what the description says, not on general
+football knowledge and not on what usually happens in highlight clips. If the
 description does not mention defenders or a goalkeeper, treat them as absent
 and judge difficulty accordingly. For every field write a short (one to two
 sentence) explanation that quotes the specific movement, body part, or moment
-from the description. For placement, state which part of the goal the ball
-entered (for example, top left corner). If the description calls something
-unclear, say so in the explanation rather than guessing. This explanation will
-later be shown to the players to justify the result, so it must be concrete
-and specific.
+from the description. If the description calls something unclear, say so in
+the explanation rather than guessing. This explanation will later be shown to
+the players to justify the result, so it must be concrete and specific.
 ${GROUNDING_RULES}`
+
+// The 9 cells of the goal-mouth grid (3 rows x 3 columns, split by the
+// crossbar and goalposts) and the fixed score each one is worth. The model
+// only ever picks a zone; the number comes from this table, so the score can
+// never contradict the zone. Corners are the hardest targets, mid-height
+// sides and top center are reachable, and central or low-central shots are
+// the easiest for a keeper to cover.
+const PLACEMENT_ZONE_SCORES = {
+  top_left: 10,
+  top_right: 10,
+  bottom_left: 8,
+  bottom_right: 8,
+  mid_left: 6,
+  mid_right: 6,
+  top_center: 5,
+  mid_center: 3,
+  bottom_center: 2,
+}
+
+const PLACEMENT_ZONES = Object.keys(PLACEMENT_ZONE_SCORES)
+
+// Zone the rubric maps "unclear or no goal described" to — the lowest-value
+// cell, matching the old behavior of scoring unclear placement low.
+const UNCLEAR_ZONE = 'bottom_center'
 
 // JSON schema handed to llama.cpp (via responseFormat) so the model is
 // grammar-constrained to emit exactly this shape — no fragile text parsing.
@@ -107,13 +140,27 @@ const scoreField = {
   additionalProperties: false,
 }
 
+// Placement carries no model-chosen score: the model picks one of the 9
+// closed-list zones and the number is looked up in PLACEMENT_ZONE_SCORES.
+// `zone` is listed (and required) before `explanation` so the grammar forces
+// the model to commit to a cell before it writes the justification.
+const placementField = {
+  type: 'object',
+  properties: {
+    zone: { type: 'string', enum: PLACEMENT_ZONES },
+    explanation: { type: 'string' },
+  },
+  required: ['zone', 'explanation'],
+  additionalProperties: false,
+}
+
 const SCORE_SCHEMA = {
   type: 'object',
   properties: {
     skill: scoreField,
     difficulty: scoreField,
     aesthetic: scoreField,
-    placement: scoreField,
+    placement: placementField,
   },
   required: ['skill', 'difficulty', 'aesthetic', 'placement'],
   additionalProperties: false,
@@ -577,13 +624,20 @@ function parseScore (content) {
 
 // Normalize the raw parsed object into our canonical, clamped shape and add the
 // derived total, so downstream code (and compareClips) can rely on it.
+// Placement is special: its score is never taken from the model — the zone is
+// looked up in PLACEMENT_ZONE_SCORES and the number follows from the table.
 function finalizeScore (parsed, meta) {
   const scores = {}
   for (const field of SCORE_FIELDS) {
     const raw = parsed?.[field] || {}
-    scores[field] = {
-      score: clampScore(raw.score),
-      explanation: String(raw.explanation ?? '').trim() || '(no explanation returned)',
+    const explanation = String(raw.explanation ?? '').trim() || '(no explanation returned)'
+    if (field === 'placement') {
+      // The enum grammar guarantees a valid zone; the fallback only covers a
+      // parse that slipped past it, and maps to the same cell as "unclear".
+      const zone = PLACEMENT_ZONE_SCORES[raw.zone] !== undefined ? raw.zone : UNCLEAR_ZONE
+      scores[field] = { score: PLACEMENT_ZONE_SCORES[zone], zone, explanation }
+    } else {
+      scores[field] = { score: clampScore(raw.score), explanation }
     }
   }
   return { scores, total: sumScores(scores), ...meta }
@@ -600,6 +654,11 @@ function mockScore (frames, metadata) {
       explanation: `(offline mock) ${field} estimated from ${frames.length} frames over ${(metadata.duration || 0).toFixed(1)}s.`,
     }
   })
+  // Placement mirrors the real path: a zone picked deterministically, score
+  // taken from the table so mock output has the same shape as a real score.
+  const mockZone = PLACEMENT_ZONES[seed % PLACEMENT_ZONES.length]
+  scores.placement.zone = mockZone
+  scores.placement.score = PLACEMENT_ZONE_SCORES[mockZone]
   return {
     scores,
     total: sumScores(scores),
@@ -615,6 +674,8 @@ module.exports = {
   JUDGE_PROMPT_PREFIX,
   JUDGE_RUBRIC,
   MODEL_INFO,
+  PLACEMENT_ZONE_SCORES,
+  PLACEMENT_ZONES,
   MIN_CLIP_FPS,
   extractFrames,
   getVideoDuration,

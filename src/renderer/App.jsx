@@ -12,6 +12,22 @@ const RUBRIC = [
   { key: 'placement', label: 'Placement', gloss: 'where in the goal the shot lands' },
 ]
 
+// Plain-words labels for the 9 goal-mouth zones the placement criterion is
+// classified into (3 rows x 3 columns, split by the crossbar and goalposts).
+// Keys match the `zone` field the scorer returns; the score is derived from
+// the zone in the main process, so showing both makes any mismatch obvious.
+const ZONE_LABELS = {
+  top_left: 'top left corner',
+  top_center: 'top center',
+  top_right: 'top right corner',
+  mid_left: 'mid-height left',
+  mid_center: 'dead center',
+  mid_right: 'mid-height right',
+  bottom_left: 'bottom left corner',
+  bottom_center: 'bottom center',
+  bottom_right: 'bottom right corner',
+}
+
 // Fallback so the status badge renders even before the main process replies.
 const DEFAULT_MODEL_INFO = { name: 'SmolVLM2 2.2B', id: '', runtime: 'QVAC' }
 
@@ -528,6 +544,11 @@ export default function App () {
               <div key={key} style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
                 <div>
                   <strong>{label}</strong> <span style={{ color: '#8a8f98' }}>[{gloss}]</span>: {clipScore.scores[key].score} of 10
+                  {key === 'placement' && clipScore.scores[key].zone && (
+                    <span style={{ color: '#5dade2' }}>
+                      {' '}· zone: {ZONE_LABELS[clipScore.scores[key].zone] ?? clipScore.scores[key].zone}
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, color: '#c8ccd2', marginTop: 4 }}>
                   Why: {clipScore.scores[key].explanation}

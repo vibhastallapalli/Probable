@@ -42,6 +42,36 @@ const ffprobePath = require('ffprobe-static').path
 //   to something the model claimed to see rather than to what usually
 //   happens in highlights.
 //
+// On top of the per-clip passes, a match is decided by a HEAD-TO-HEAD pass
+// (compareHeadToHead): both clips' key frames go into one call and the model
+// answers direct either/or questions — whose shot flew faster, whose strike
+// was cleaner, whose finish looked better. Scoring each clip alone kept
+// producing near-identical numbers because the model never had the other
+// clip in view to notice the differences; asking it to pick between two
+// shots it can see side by side is a far easier judgment for a small VLM
+// than assigning absolute ratings from memory of a rubric.
+//
+// Two safeguards keep that judgment honest, both in the spirit of the
+// placement pass's mirror check:
+// - ORDER CHECK: the question call runs twice, once with each clip first.
+//   A pick only counts when the two runs agree (the answers mirror); a pick
+//   that sticks to whichever clip came first is positional bias, observed on
+//   real runs, and degrades to "equal" instead of settling money.
+// - DISTANCE PROBE: "who shot from farther out" is NOT asked across the two
+//   frame sequences at all — on real runs that answer glued itself to the
+//   first clip in every single call, and a side-by-side composite variant
+//   glued itself to the left half. Relative distance questions are beyond
+//   this model. Instead each clip is judged ALONE on a closed stride scale
+//   (under 5 / 5-10 / 10-20 / over 20 strides from goal), asked on two
+//   different pre-shot moments that must agree, and the two clips' buckets
+//   are compared in code. Absolute closed-choice questions on single
+//   images with a consistency vote are exactly what this model has already
+//   proven it can do in the placement pass, and judging each clip alone
+//   removes the positional confound by construction.
+// Placement is NOT re-asked either: each clip's zone verdict (the
+// deterministic, mirror-checked pass above) is reused, and the zones' table
+// scores decide who wins the placement dimension.
+//
 // Every "why" text shown to players must read like a person casually
 // describing the shot to a friend: the prompts and the fallback strings
 // below ban frame/grid/row/column/cell talk and any narration of the
@@ -187,6 +217,67 @@ words only: never use the words frame, image, grid, row, column, or cell,
 and never describe how you worked the answer out.
 ${GROUNDING_RULES}`
 
+// Head-to-head prompt — sent with BOTH clips' key frames attached (the
+// first clip's frames, then the second's). Direct either/or questions
+// instead of absolute ratings: a small VLM that scores two solo clips
+// almost identically can still tell which of two shots it can see side by
+// side travels faster. The image counts are spelled out so the model never
+// mixes up whose shot is whose, and the whole call runs twice with the
+// clip order swapped — only answers that mirror across the two runs count.
+// Distance is deliberately NOT asked here (see DISTANCE_PROMPT).
+function buildComparePrompt (countA, countB) {
+  return `You are looking at still frames from TWO different short football (soccer)
+clips. Each clip shows one player taking one shot at a goal.
+
+The first ${countA} images are ordered moments from PLAYER A's clip, start to
+finish. The remaining ${countB} images are ordered moments from PLAYER B's
+clip, start to finish. Keep careful count so you never mix the two shots up.
+
+Compare the two shots directly and answer three questions. For each one pick
+"A" if it is true of Player A's shot, "B" if it is true of Player B's shot,
+or "equal" ONLY if the two shots genuinely look the same on that point.
+
+1. faster_shot: Whose shot travels FASTER? Judge by how much distance the
+   ball covers from one moment to the next in each clip.
+2. cleaner_strike: Whose strike is the CLEANER contact — a properly struck
+   side-foot or laces hit, rather than a scrappy toe poke or a mishit?
+3. more_spectacular: Whose finish is MORE SPECTACULAR to watch?
+
+For each answer also give one short reason, worded the way a person would
+casually say it out loud to a friend — for example "he absolutely leathered
+it, the keeper would have no chance". Plain everyday football words only:
+never use the words frame, frames, image, grid, row, column, or cell, and
+never describe how you compared the clips.
+${GROUNDING_RULES}`
+}
+
+// Distance probe prompt — sent with ONE pre-shot frame from ONE clip. Each
+// clip is judged alone on a closed stride scale, on two different pre-shot
+// moments that must agree; the two clips' buckets are then compared in
+// code. Relative "who is farther" questions proved positional on real runs
+// (across two frame sequences AND across a side-by-side composite), so
+// distance is decided the way placement is: absolute closed choices on
+// single images, held to a consistency vote.
+const DISTANCE_PROMPT = `You are looking at one still moment from a short football (soccer) clip.
+A player is on the pitch with a ball, before or during a shot at a goal.
+
+Find the player who is shooting and the goal they are shooting toward.
+Judge how far the player is standing from the goal line, measured in the
+big strides a grown adult would need to walk from the player straight to
+the goal.
+
+Answer with exactly one of:
+- under_5: fewer than 5 strides — right on top of the goal
+- 5_to_10: between 5 and 10 strides — close range
+- 10_to_20: between 10 and 20 strides — medium range
+- over_20: more than 20 strides — long range
+
+Then give one short reason in plain everyday football words, the way a
+person would casually say it to a friend. Never use the words frame,
+image, picture, grid, row, column, or cell, and never describe how you
+worked the answer out.
+${GROUNDING_RULES}`
+
 // The 9 cells of the goal-mouth grid (3 rows x 3 columns, split by the
 // crossbar and goalposts) and the fixed score each one is worth. The model
 // only ever picks a zone; the number comes from this table, so the score can
@@ -255,6 +346,55 @@ const placementField = {
   additionalProperties: false,
 }
 
+// One head-to-head answer: a hard A/B/equal commitment plus a short spoken
+// reason. `pick` comes before `reason` so the grammar forces the commitment
+// first, same trick as the placement row/column ordering.
+const comparePickField = {
+  type: 'object',
+  properties: {
+    pick: { type: 'string', enum: ['A', 'B', 'equal'] },
+    reason: { type: 'string' },
+  },
+  required: ['pick', 'reason'],
+  additionalProperties: false,
+}
+
+// The three direct questions the head-to-head call must answer. Placement
+// is deliberately absent — it comes from each clip's zone verdict — and so
+// is distance, which gets its own composite-image probe (DISTANCE_PROMPT).
+const COMPARE_SCHEMA = {
+  type: 'object',
+  properties: {
+    faster_shot: comparePickField,
+    cleaner_strike: comparePickField,
+    more_spectacular: comparePickField,
+  },
+  required: ['faster_shot', 'cleaner_strike', 'more_spectacular'],
+  additionalProperties: false,
+}
+
+// Distance probe answer: a hard stride-bucket commitment plus a short
+// spoken reason, bucket first so the grammar forces the commitment.
+const STRIDE_BUCKETS = ['under_5', '5_to_10', '10_to_20', 'over_20']
+
+const distanceField = {
+  type: 'object',
+  properties: {
+    strides: { type: 'string', enum: STRIDE_BUCKETS },
+    reason: { type: 'string' },
+  },
+  required: ['strides', 'reason'],
+  additionalProperties: false,
+}
+
+// Plain-words rendering of each stride bucket for composed distance reasons.
+const STRIDE_BUCKET_PHRASES = {
+  under_5: 'right on top of the goal',
+  '5_to_10': 'close range',
+  '10_to_20': 'medium range',
+  over_20: 'long range',
+}
+
 // Judge schema covers only the three text-judged criteria; placement is
 // answered by the vision pass and merged into the result in finalizeScore.
 const SCORE_SCHEMA = {
@@ -285,6 +425,15 @@ const DEFAULT_MAX_FRAMES = Number(process.env.QVAC_MAX_FRAMES) || 16
 // batch that includes pre-shot frames (ball on the ground) reliably drags the
 // answer toward "bottom, rolling".
 const PLACEMENT_FRAME_COUNT = Number(process.env.QVAC_PLACEMENT_FRAMES) || 3
+
+// How many key frames per clip the head-to-head pass sends. Both clips must
+// share one context window: at the FRAME_MAX_EDGE cap a 16:9 frame costs
+// ~576 vision tokens, so 7+7 frames is ~8k tokens — comfortable inside the
+// Qwen3-VL 16384 window with the prompt and answer, and still enough frames
+// to cover the pre-kick stance, the contact, and the ball in flight for
+// both shots. Selection skips the earliest run-up (see
+// selectComparisonFrames).
+const COMPARE_FRAME_COUNT = Number(process.env.QVAC_COMPARE_FRAMES) || 7
 
 // Longest edge (px) an extracted frame may keep. Qwen3-VL's image token cost
 // scales with resolution (~(w/32)*(h/32) tokens per frame), so unbounded
@@ -700,6 +849,10 @@ async function scoreClip (frames, metadata = {}) {
 
   return finalizeScore(parsed, placement, {
     frameCount: frames.length,
+    // The extracted frame paths ride along (they persist in the temp dir), so
+    // a later head-to-head comparison can reuse the exact frames this score
+    // was judged on without re-extracting.
+    frames,
     duration: metadata.duration || 0,
     model: MODEL_INFO.id,
     mock: false,
@@ -868,12 +1021,13 @@ async function flipFrame (framePath) {
 }
 
 /**
- * Compare two scored clips and decide a winner by total score.
+ * Compare two scored clips by total score.
  *
- * NOTE: this is the function that will later drive automatic settlement — once
- * both clips in a Judge-mode match are scored, the caller will pass their
- * results here and, on a decisive result, invoke escrow.releaseEscrow(escrowId,
- * winnerAddress). That wiring is intentionally NOT done here yet.
+ * No longer the settlement decider: matches settle on compareHeadToHead's
+ * verdict, which judges both clips side by side. This totals comparison
+ * remains as supporting detail, as the last tiebreak when the head-to-head
+ * dimensions and the spectacle pick are all dead even, and as the fallback
+ * for legacy score objects that carry no frame paths.
  *
  * @param {object} clipA - scoreClip() result for clip A.
  * @param {object} clipB - scoreClip() result for clip B.
@@ -895,6 +1049,421 @@ function compareClips (clipA, clipB) {
   }))
 
   return { winner, margin, totalA, totalB, breakdown }
+}
+
+// ---------------------------------------------------------------------------
+// Head-to-head comparison — the pass that actually decides a match
+// ---------------------------------------------------------------------------
+
+// The four dimensions a match is decided on, in the order they are reported.
+// distance/speed/technique come from the model's either/or answers in the
+// comparison call; placement is decided in code from the two zone verdicts.
+// Spectacle is asked in the same call but only breaks a 2-2 (or all-equal)
+// tie — it never counts as a fifth dimension.
+const COMPARE_DIMENSIONS = ['distance', 'speed', 'technique', 'placement']
+
+// Maps each model-answered dimension to its question key in COMPARE_SCHEMA.
+// Distance is absent: it is answered by the composite-image probe.
+const COMPARE_QUESTION_KEYS = {
+  speed: 'faster_shot',
+  technique: 'cleaner_strike',
+}
+
+// Words the model is banned from using in player-facing reasons. A reason
+// that trips this is replaced with a composed fallback and logged as a
+// prompt bug, same policy as the placement pass's composed explanations.
+const BANNED_REASON_WORDS = /\b(frames?|images?|pictures?|hal(f|ves)|dividers?|grids?|rows?|columns?|cells?)\b/i
+
+// Composed fallback reasons, used when the model's reason narrates the
+// analysis despite the prompt. Keyed by dimension, then by pick.
+const FALLBACK_REASONS = {
+  distance: {
+    A: 'Player A takes his shot from further out.',
+    B: 'Player B takes his shot from further out.',
+    equal: 'Both shots look about the same distance out.',
+  },
+  speed: {
+    A: 'Player A hits the quicker, harder shot.',
+    B: 'Player B hits the quicker, harder shot.',
+    equal: 'The two shots travel at about the same pace.',
+  },
+  technique: {
+    A: 'Player A catches his strike more cleanly.',
+    B: 'Player B catches his strike more cleanly.',
+    equal: 'Both strikes look equally clean.',
+  },
+  spectacle: {
+    A: "Player A's finish is the better watch.",
+    B: "Player B's finish is the better watch.",
+    equal: 'Neither finish stands out over the other.',
+  },
+}
+
+// What each dimension win means, in spoken words, for the verdict summary.
+const DIMENSION_WIN_PHRASES = {
+  distance: 'shot from further out',
+  speed: 'hit the faster shot',
+  technique: 'struck it cleaner',
+  placement: 'found the better spot in the goal',
+}
+
+/**
+ * Whether two score objects carry everything a head-to-head needs: the
+ * extracted frame paths, still present on disk, and a placement zone each.
+ * Settlement uses this to fall back to the totals comparison for legacy
+ * scores instead of failing the match.
+ */
+function canCompareHeadToHead (clipA, clipB) {
+  return [clipA, clipB].every((clip) =>
+    Array.isArray(clip?.frames) &&
+    clip.frames.length > 0 &&
+    clip.frames.every((p) => typeof p === 'string' && fs.existsSync(p)) &&
+    typeof clip?.scores?.placement?.zone === 'string'
+  )
+}
+
+/**
+ * Pick the key frames one clip contributes to the head-to-head call.
+ *
+ * Skips the earliest quarter of the extracted frames (pure run-up, no signal
+ * for any of the four questions), then spreads evenly through the rest and
+ * always keeps the final frame — covering the pre-kick stance, the moment of
+ * contact, and the ball in flight, which is exactly what the distance, speed,
+ * and technique questions need. Deterministic, so the same two clips always
+ * produce the same call.
+ *
+ * @param {string[]} frames - Ordered frame paths from extractFrames().
+ * @param {number} [count] - How many frames to keep.
+ * @returns {string[]} Ordered subset of frames.
+ */
+function selectComparisonFrames (frames, count = COMPARE_FRAME_COUNT) {
+  if (frames.length <= count) return [...frames]
+  const start = Math.floor(frames.length / 4)
+  const span = frames.length - 1 - start
+  const picked = new Set()
+  for (let i = 0; i < count; i++) {
+    picked.add(frames[start + Math.round((i * span) / (count - 1))])
+  }
+  return [...picked]
+}
+
+/**
+ * Judge two scored clips head to head and produce the match verdict.
+ *
+ * The question call (whose shot flew faster, whose strike was cleaner,
+ * whose finish was more spectacular) sees both clips' key frames together
+ * and runs TWICE, once with each clip first; an answer only counts when
+ * the two runs mirror each other, so a pick that just favors whichever
+ * clip came first degrades to "equal". Distance gets its own probe: each
+ * clip is judged ALONE on a closed stride scale, on two pre-shot moments
+ * that must agree, and the buckets are compared in code. Placement is not
+ * re-asked: the two clips' zone verdicts are compared by their table
+ * scores (top corner beats center).
+ *
+ * Distance, speed, technique, and placement each award one point; most
+ * points wins. A points tie falls to the spectacle pick, then to the
+ * scorecard totals, then to a genuine tie.
+ *
+ * Greedy decoding (temp 0, inherited from runCompletion) keeps the verdict
+ * reproducible — the same two clips must produce the same winner when money
+ * settles on it.
+ *
+ * @param {object} clipA - scoreClip() result for Player A (must carry frames).
+ * @param {object} clipB - scoreClip() result for Player B (must carry frames).
+ * @param {object} [opts]
+ * @param {string[]} [opts.framesA] - Override frame paths for clip A.
+ * @param {string[]} [opts.framesB] - Override frame paths for clip B.
+ * @returns {Promise<object>} Verdict:
+ *   { winner: 'A'|'B'|'tie', summary, points: {a, b},
+ *     dimensions: { distance|speed|technique: {winner, reason},
+ *                   placement: {winner, reason, zoneA, zoneB} },
+ *     spectacle: {pick, reason}, tiebreak: null|'spectacle'|'totals',
+ *     totals: {a, b}, frameCounts: {a, b}, model, mock }
+ */
+async function compareHeadToHead (clipA, clipB, opts = {}) {
+  const framesA = opts.framesA || clipA?.frames
+  const framesB = opts.framesB || clipB?.frames
+  if (!Array.isArray(framesA) || framesA.length === 0 ||
+      !Array.isArray(framesB) || framesB.length === 0) {
+    throw new Error('compareHeadToHead needs both clips’ extracted frame paths')
+  }
+
+  const pickedA = selectComparisonFrames(framesA)
+  const pickedB = selectComparisonFrames(framesB)
+  const meta = {
+    frameCounts: { a: pickedA.length, b: pickedB.length },
+    model: MODEL_INFO.id,
+    mock: false,
+  }
+
+  if (process.env.QVAC_MOCK_SCORING === '1') {
+    return buildVerdict(mockModelDimensions(clipA, clipB), clipA, clipB, {
+      ...meta, model: 'mock', mock: true,
+    })
+  }
+
+  const { sdk, modelId } = await getModel()
+
+  // Same clean-slate guarantee as scoreClip: these calls must never inherit
+  // leftover context from a previous clip's passes.
+  await clearCache(sdk)
+
+  // Order check: the same questions with the clips in both orders. In the
+  // swapped run "A" means clipB, so its picks are mirrored before comparing.
+  const forward = await askComparison(sdk, modelId, pickedA, pickedB)
+  const reversed = await askComparison(sdk, modelId, pickedB, pickedA)
+  console.log('[qvac] head-to-head forward: ' + JSON.stringify(forward))
+  console.log('[qvac] head-to-head reversed: ' + JSON.stringify(reversed))
+
+  const modelDimensions = {}
+  for (const [dim, key] of Object.entries(COMPARE_QUESTION_KEYS)) {
+    modelDimensions[dim] = reconcileOrders(dim, forward[key], reversed[key])
+  }
+  modelDimensions.spectacle = reconcileOrders('spectacle', forward.more_spectacular, reversed.more_spectacular)
+
+  // Distance probe: each clip's pre-shot moments judged alone on the
+  // stride scale, buckets compared in code.
+  modelDimensions.distance = await probeDistance(sdk, modelId, pickedA, pickedB)
+
+  return buildVerdict(modelDimensions, clipA, clipB, meta)
+}
+
+// One run of the three-question comparison call, grammar-locked to
+// COMPARE_SCHEMA. The first clip's frames are presented as Player A.
+async function askComparison (sdk, modelId, firstFrames, secondFrames) {
+  return parseScore(await runCompletion(sdk, modelId, {
+    history: [{
+      role: 'user',
+      content: buildComparePrompt(firstFrames.length, secondFrames.length),
+      attachments: [...firstFrames, ...secondFrames].map((p) => ({ path: p })),
+    }],
+    responseFormat: {
+      type: 'json_schema',
+      json_schema: { name: 'head_to_head', schema: COMPARE_SCHEMA },
+    },
+  }))
+}
+
+// A↔B mirror for the swapped run's picks.
+function mirrorPick (pick) {
+  return pick === 'A' ? 'B' : pick === 'B' ? 'A' : 'equal'
+}
+
+// An answer survives the order check only when the swapped run points at
+// the same actual clip. Anything else — including one run saying "equal" —
+// is treated as the model failing to genuinely separate the shots, and the
+// dimension scores as equal with a composed reason.
+function reconcileOrders (dimension, forwardAnswer, reversedAnswer) {
+  const fwd = normalizeAnswer(dimension, forwardAnswer)
+  const rev = normalizeAnswer(dimension, reversedAnswer)
+  const mirrored = mirrorPick(rev.pick)
+  if (fwd.pick !== 'equal' && fwd.pick === mirrored) {
+    return { winner: fwd.pick, reason: fwd.reason }
+  }
+  if (fwd.pick === 'equal' && rev.pick === 'equal') {
+    return { winner: 'equal', reason: fwd.reason }
+  }
+  console.warn(
+    `[qvac] head-to-head ${dimension} failed the order check ` +
+    `(forward=${fwd.pick}, reversed=${rev.pick}) — scoring it equal`
+  )
+  return { winner: 'equal', reason: FALLBACK_REASONS[dimension].equal }
+}
+
+// One stride question against one frame, grammar-locked to the bucket enum.
+async function askStrides (sdk, modelId, framePath) {
+  return parseScore(await runCompletion(sdk, modelId, {
+    history: [{
+      role: 'user',
+      content: DISTANCE_PROMPT,
+      attachments: [{ path: framePath }],
+    }],
+    responseFormat: {
+      type: 'json_schema',
+      json_schema: { name: 'distance_probe', schema: distanceField },
+    },
+  }))
+}
+
+// One clip's stride bucket: two different pre-shot moments are asked
+// independently and must agree, the same consistency bar the placement
+// pass holds its votes to. Disagreement means the model cannot pin this
+// clip's distance down, reported as null.
+async function clipStrideBucket (sdk, modelId, pickedFrames, label) {
+  const probes = pickedFrames.slice(0, 2)
+  const answers = []
+  for (const frame of probes) {
+    answers.push(await askStrides(sdk, modelId, frame))
+  }
+  const agreed = answers.every((a) => a.strides === answers[0].strides)
+  const bucket = agreed ? answers[0].strides : null
+  console.log(
+    `[qvac] stride probe ${label}: ${answers.map((a) => a.strides).join(' / ')} -> ${bucket ?? 'unclear'}`
+  )
+  return bucket
+}
+
+// The distance dimension: each clip judged ALONE on the closed stride
+// scale, buckets compared in code. Judging the clips separately removes
+// the positional confound by construction — relative "who is farther"
+// questions proved positional on real runs in every format tried. Reasons
+// shown to players are composed from the buckets, never the model's words.
+async function probeDistance (sdk, modelId, pickedA, pickedB) {
+  const bucketA = await clipStrideBucket(sdk, modelId, pickedA, 'clip A')
+  const bucketB = await clipStrideBucket(sdk, modelId, pickedB, 'clip B')
+
+  if (!bucketA || !bucketB || bucketA === bucketB) {
+    return { winner: 'equal', reason: FALLBACK_REASONS.distance.equal }
+  }
+
+  const winner = STRIDE_BUCKETS.indexOf(bucketA) > STRIDE_BUCKETS.indexOf(bucketB) ? 'A' : 'B'
+  const [farBucket, nearBucket] = winner === 'A' ? [bucketA, bucketB] : [bucketB, bucketA]
+  return {
+    winner,
+    reason: `Player ${winner} takes his shot from further out — ` +
+      `${STRIDE_BUCKET_PHRASES[farBucket]} against ${STRIDE_BUCKET_PHRASES[nearBucket]}.`,
+  }
+}
+
+// Normalize one model answer: guarantee a valid pick and a plain-language
+// reason. A reason that mentions banned analysis words is a prompt bug —
+// logged loudly and replaced with the composed fallback, never shown.
+function normalizeAnswer (dimension, answer) {
+  const pick = ['A', 'B', 'equal'].includes(answer?.pick) ? answer.pick : 'equal'
+  let reason = String(answer?.reason ?? '').trim()
+  if (!reason || BANNED_REASON_WORDS.test(reason)) {
+    if (reason) {
+      console.error(`[qvac] BUG: banned wording in ${dimension} reason: ${JSON.stringify(reason)}`)
+    }
+    reason = FALLBACK_REASONS[dimension][pick]
+  }
+  return { pick, reason }
+}
+
+// Decide the placement dimension from the two zone verdicts: the zone with
+// the higher table score wins (top corner beats center). The reason is
+// composed from the zones' plain-words phrases, so it is deterministic and
+// can never leak internal zone keys or narrate the grid.
+function placementDimension (clipA, clipB) {
+  const zoneA = clipA?.scores?.placement?.zone || UNCLEAR_ZONE
+  const zoneB = clipB?.scores?.placement?.zone || UNCLEAR_ZONE
+  const scoreA = PLACEMENT_ZONE_SCORES[zoneA] ?? PLACEMENT_ZONE_SCORES[UNCLEAR_ZONE]
+  const scoreB = PLACEMENT_ZONE_SCORES[zoneB] ?? PLACEMENT_ZONE_SCORES[UNCLEAR_ZONE]
+
+  let winner = 'equal'
+  let reason
+  if (scoreA > scoreB) {
+    winner = 'A'
+    reason = `Player A found the harder spot — his shot went ${PLACEMENT_ZONE_PHRASES[zoneA]}, while Player B's went ${PLACEMENT_ZONE_PHRASES[zoneB]}.`
+  } else if (scoreB > scoreA) {
+    winner = 'B'
+    reason = `Player B found the harder spot — his shot went ${PLACEMENT_ZONE_PHRASES[zoneB]}, while Player A's went ${PLACEMENT_ZONE_PHRASES[zoneA]}.`
+  } else if (zoneA === zoneB) {
+    reason = `Both shots went ${PLACEMENT_ZONE_PHRASES[zoneA]}.`
+  } else {
+    reason = `The two finishes ended up in equally tough spots — one went ${PLACEMENT_ZONE_PHRASES[zoneA]}, the other ${PLACEMENT_ZONE_PHRASES[zoneB]}.`
+  }
+
+  return { winner, reason, zoneA, zoneB }
+}
+
+// Combine the order-checked model dimensions, the zone-derived placement
+// dimension, and the tiebreak chain into the final match verdict.
+// `modelDimensions` carries distance/speed/technique/spectacle already
+// reconciled to { winner: 'A'|'B'|'equal', reason }.
+function buildVerdict (modelDimensions, clipA, clipB, meta) {
+  const dimensions = {}
+  for (const dim of COMPARE_DIMENSIONS) {
+    dimensions[dim] = dim === 'placement'
+      ? placementDimension(clipA, clipB)
+      : modelDimensions[dim]
+  }
+  const spectacle = {
+    pick: modelDimensions.spectacle.winner,
+    reason: modelDimensions.spectacle.reason,
+  }
+
+  const points = { a: 0, b: 0 }
+  for (const dim of COMPARE_DIMENSIONS) {
+    if (dimensions[dim].winner === 'A') points.a++
+    else if (dimensions[dim].winner === 'B') points.b++
+  }
+
+  const totalsDetail = compareClips(clipA, clipB)
+
+  let winner
+  let tiebreak = null
+  if (points.a !== points.b) {
+    winner = points.a > points.b ? 'A' : 'B'
+  } else if (spectacle.pick === 'A' || spectacle.pick === 'B') {
+    winner = spectacle.pick
+    tiebreak = 'spectacle'
+  } else if (totalsDetail.winner !== 'tie') {
+    winner = totalsDetail.winner
+    tiebreak = 'totals'
+  } else {
+    winner = 'tie'
+  }
+
+  return {
+    winner,
+    summary: buildSummary(winner, tiebreak, dimensions, spectacle),
+    points,
+    dimensions,
+    spectacle,
+    tiebreak,
+    totals: { a: totalsDetail.totalA, b: totalsDetail.totalB },
+    ...meta,
+  }
+}
+
+// The one-paragraph plain-language "why they won" shown as the headline.
+// Composed in code from the per-dimension reasons, so it is deterministic
+// and stays inside the same plain-language rules as everything else.
+function buildSummary (winner, tiebreak, dimensions, spectacle) {
+  if (winner === 'tie') {
+    return 'Dead even — nothing separates the two shots on distance, pace, strike, or placement, and neither finish stands out over the other.'
+  }
+
+  const wins = COMPARE_DIMENSIONS.filter((dim) => dimensions[dim].winner === winner)
+
+  if (wins.length === 0) {
+    // Won purely on a tiebreak with no dimension in their column.
+    const via = tiebreak === 'spectacle'
+      ? `the more spectacular finish settles it: ${spectacle.reason}`
+      : 'the overall scorecards settle it.'
+    return `Player ${winner} takes it — the shots are level on every measure, so ${via}`
+  }
+
+  const winPhrases = wins.map((dim) => DIMENSION_WIN_PHRASES[dim])
+  const listed = winPhrases.length === 1
+    ? winPhrases[0]
+    : winPhrases.slice(0, -1).join(', ') + ' and ' + winPhrases[winPhrases.length - 1]
+
+  const reasons = wins.map((dim) => dimensions[dim].reason).join(' ')
+  const tiebreakNote = tiebreak === 'spectacle'
+    ? ` The finish that looks better settles a split decision: ${spectacle.reason}`
+    : tiebreak === 'totals'
+      ? ' With the shots split down the middle, the overall scorecards settle it.'
+      : ''
+
+  return `Player ${winner} takes it — he ${listed}. ${reasons}${tiebreakNote}`
+}
+
+// Deterministic offline stand-in for the reconciled model dimensions, used
+// only when QVAC_MOCK_SCORING=1 so the full verdict plumbing can run
+// without a model.
+function mockModelDimensions (clipA, clipB) {
+  const answer = (dim, a, b) => {
+    const winner = a === b ? 'equal' : a > b ? 'A' : 'B'
+    return { winner, reason: `(offline mock) ${FALLBACK_REASONS[dim][winner]}` }
+  }
+  return {
+    distance: answer('distance', clipA?.scores?.difficulty?.score ?? 0, clipB?.scores?.difficulty?.score ?? 0),
+    speed: answer('speed', clipA?.scores?.skill?.score ?? 0, clipB?.scores?.skill?.score ?? 0),
+    technique: answer('technique', clipA?.scores?.skill?.score ?? 0, clipB?.scores?.skill?.score ?? 0),
+    spectacle: answer('spectacle', clipA?.scores?.aesthetic?.score ?? 0, clipB?.scores?.aesthetic?.score ?? 0),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1603,7 @@ function mockScore (frames, metadata) {
     scores,
     total: sumScores(scores),
     frameCount: frames.length,
+    frames,
     duration: metadata.duration || 0,
     model: 'mock',
     mock: true,
@@ -1055,5 +1625,8 @@ module.exports = {
   scoreClip,
   classifyPlacement,
   compareClips,
+  compareHeadToHead,
+  canCompareHeadToHead,
+  selectComparisonFrames,
   finalizeScore,
 }

@@ -74,13 +74,21 @@ function registerHandlers () {
     return { ...score, videoPath, fps, lowFps }
   })
 
-  // Exposed for testing; NOT yet wired to escrow.releaseEscrow (manual next step).
+  // Totals-only comparison, kept for testing and as supporting detail.
   ipcMain.handle('clip:compare', (_event, clipA, clipB) => {
     return scoring.compareClips(clipA, clipB)
   })
 
-  ipcMain.handle('match:settle', (_event, matchId, clipA, clipB, addressA, addressB) => {
-    return settlement.settleMatch(matchId, clipA, clipB, addressA, addressB)
+  // Head-to-head verdict: both clips' key frames judged side by side in one
+  // local call. This is the winner the match settles on.
+  ipcMain.handle('match:compare', (_event, clipA, clipB) => {
+    return scoring.compareHeadToHead(clipA, clipB)
+  })
+
+  // The optional verdict is the head-to-head result already shown to the
+  // players, passed through so settlement never re-runs the model.
+  ipcMain.handle('match:settle', (_event, matchId, clipA, clipB, addressA, addressB, verdict) => {
+    return settlement.settleMatch(matchId, clipA, clipB, addressA, addressB, verdict)
   })
 }
 

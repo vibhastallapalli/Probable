@@ -25,7 +25,9 @@ const ffprobePath = require('ffprobe-static').path
 // model commits to what it can actually see before it judges anything:
 //
 //   Pass 1 (describe, frames attached): report only what is literally visible
-//   in the sampled frames. No opinions, no scores, no football knowledge.
+//   in the sampled frames — including how far the shooter stands from the
+//   goal, how fast the shot travels, and the kicking foot at contact. No
+//   opinions, no scores, no football knowledge.
 //   Pass 2 (placement, one tail frame per call): the last few frames are each
 //   shown alone — one image, one row+column commitment — and the answers are
 //   majority-voted, so pre-shot frames with the ball still on the ground
@@ -34,10 +36,21 @@ const ffprobePath = require('ffprobe-static').path
 //   trusted, because small VLMs guess chirality with confidence; an
 //   unverified side degrades to the center column instead of a coin flip.
 //   Pass 3 (judge, text only): score skill/difficulty/aesthetic from the
-//   pass-1 description alone, so every point traces back to something the
-//   model claimed to see rather than to what usually happens in highlights.
+//   pass-1 description plus the pass-2 zone, handed over as a settled fact
+//   so all three criteria reason about the same finishing spot instead of
+//   each re-guessing it from the description. Every point still traces back
+//   to something the model claimed to see rather than to what usually
+//   happens in highlights.
 //
-// GROUNDING_RULES rides along on every prompt sent to the model.
+// Every "why" text shown to players must read like a person casually
+// describing the shot to a friend: the prompts and the fallback strings
+// below ban frame/grid/row/column/cell talk and any narration of the
+// analysis process.
+//
+// GROUNDING_RULES rides along on the describe and placement prompts (the
+// passes that see images). The judge pass carries its own text-only ground
+// rules inside JUDGE_RUBRIC, because its explanations are player-facing and
+// must not narrate uncertainty the way the vision passes are told to.
 // ---------------------------------------------------------------------------
 
 const GROUNDING_RULES = `
@@ -58,14 +71,20 @@ Describe only what is literally visible across the frames, in order:
 - the player with the ball: position, movement, and which body part touches
   the ball in each touch you can actually see
 - the ball: where it is and how it moves from frame to frame
-- the goal, if one is visible, and whether the ball ends up in it. If it
-  does, mentally split the goal mouth into 3 rows (top, middle, bottom) and
-  3 columns (left, center, right), using the crossbar and both goalposts as
-  reference lines, and name which one of those 9 cells the ball crosses into
-  (for example top left, mid right, bottom center)
+- how far from the goal the shooter appears to be at the moment the shot is
+  struck, judged by how much ground is visible between the player and the
+  goal — close range, medium range, or long range
+- how fast the shot appears to travel, judged by how much distance the ball
+  covers between consecutive frames — a slow roller, medium pace, or struck
+  hard
+- the kicking foot and leg at the moment of contact, if visible, and the
+  kind of contact you can actually see — side foot, laces, toe poke, volley,
+  header, or whatever it actually is. If the foot or the contact moment is
+  not clearly visible, say so plainly instead of guessing
+- the goal, if one is visible, and whether the ball ends up in it
 - the pitch, surroundings, and camera view, briefly
 
-Write 6 to 12 short factual sentences. No opinions, no scores, no praise.
+Write 8 to 14 short factual sentences. No opinions, no scores, no praise.
 ${GROUNDING_RULES}`
 
 const JUDGE_PROMPT_PREFIX = `You are judging a short football (soccer) highlight clip for a friendly wager.
@@ -84,20 +103,54 @@ Score each from 0 to 10:
 
 - skill: technical execution and control — first touch, dribbling, striking
   technique, body coordination, and the cleanness of the movement.
-- difficulty: how hard the action was to pull off — angle, distance, pressure
-  from defenders, body position, speed, and improvisation required.
+- difficulty: how hard the action was to pull off — distance from goal,
+  angle, shot speed, pressure from defenders, body position, and
+  improvisation required.
 - aesthetic: the visual beauty and spectacle of the play — how impressive or
   memorable it looks as a piece of football.
 
-Base every judgment ONLY on what the description says, not on general
-football knowledge and not on what usually happens in highlight clips. If the
-description does not mention defenders or a goalkeeper, treat them as absent
-and judge difficulty accordingly. For every field write a short (one to two
-sentence) explanation that quotes the specific movement, body part, or moment
-from the description. If the description calls something unclear, say so in
-the explanation rather than guessing. This explanation will later be shown to
-the players to justify the result, so it must be concrete and specific.
-${GROUNDING_RULES}`
+Base every judgment ONLY on what the description says and on the settled
+finishing spot given above it, not on general football knowledge and not on
+what usually happens in highlight clips. If the description does not mention
+defenders or a goalkeeper, treat them as absent and judge difficulty
+accordingly. Where the description reports how far out the shooter was, how
+fast the shot traveled, or what kind of foot contact was made, use those
+reports directly: distance and shot speed belong in the difficulty judgment,
+foot contact and strike type in the skill judgment.
+
+For each criterion write a short (one to two sentence) explanation. These
+explanations are shown to the players to justify the result, and each one
+must read like a person casually describing the shot to a friend — plain
+everyday football language only. Never use the words frame, frames, grid,
+row, column, or cell. Never describe how the clip was analyzed, and never
+say that something could not be verified, was unclear, or was assumed. If
+you are not sure about a detail, give your best natural read of it in plain
+words instead of talking about the uncertainty.
+
+Each explanation must cover its own ground, and no two of them may say the
+same thing:
+- skill: talk specifically about the player's touch, technique, and control
+  of the ball, including the kind of contact on the strike if it is
+  described.
+- difficulty: talk specifically about how far out the shot was taken, the
+  angle, how fast the ball traveled, and any pressure or defenders.
+- aesthetic: talk specifically about the overall spectacle and flair — what
+  makes the play striking or plain to watch.
+
+Ground rules: mention only people, objects, and events the description
+reports. Never invent players, a goalkeeper, defenders, or a crowd it does
+not mention, and do not fill gaps with general football knowledge.`
+
+// The zone is decided once by the placement pass and handed to the judge as
+// a settled fact, so skill, difficulty, and aesthetic all reason about the
+// same finishing spot instead of each re-guessing it from the description —
+// four independent guesses used to contradict each other and the placement
+// score.
+function placementFactLine (zone) {
+  return `\n\nOne fact is already settled: the shot went ${PLACEMENT_ZONE_PHRASES[zone]}. ` +
+    'Treat that as exactly where the ball ended up, even if the description ' +
+    'above reads differently, and weigh it when judging all three criteria.'
+}
 
 // Placement pass prompt — sent with ONE tail frame attached per call, so the
 // zone is decided by a pass that can actually see the ball against the goal
@@ -127,8 +180,11 @@ column — the ball's side of the goal:
 - right: near the goalpost closer to the RIGHT edge of the picture
 - unclear: the ball is not visible, or it is not in or entering the goal
 
-Then explain in one or two sentences where the ball is relative to the
-crossbar and the goalposts in this image.
+Then, in one or two sentences, say where the shot ended up the way you
+would casually tell a friend — for example "curled into the top left
+corner" or "rolled in low through the middle". Plain everyday football
+words only: never use the words frame, image, grid, row, column, or cell,
+and never describe how you worked the answer out.
 ${GROUNDING_RULES}`
 
 // The 9 cells of the goal-mouth grid (3 rows x 3 columns, split by the
@@ -154,6 +210,22 @@ const PLACEMENT_ZONES = Object.keys(PLACEMENT_ZONE_SCORES)
 // Zone the rubric maps "unclear or no goal described" to — the lowest-value
 // cell, matching the old behavior of scoring unclear placement low.
 const UNCLEAR_ZONE = 'bottom_center'
+
+// Plain-words rendering of each zone, used wherever a zone is spoken about
+// in player-facing text (the judge's settled-fact line and the placement
+// "why" fallback). Phrased to follow "the ball went ..." / "the shot went
+// ...", so internal zone keys never leak into what players read.
+const PLACEMENT_ZONE_PHRASES = {
+  top_left: 'into the top left corner',
+  top_right: 'into the top right corner',
+  bottom_left: 'in low by the left post',
+  bottom_right: 'in low by the right post',
+  mid_left: 'in at waist height on the left side',
+  mid_right: 'in at waist height on the right side',
+  top_center: 'in high through the middle',
+  mid_center: 'in through the middle of the goal',
+  bottom_center: 'in low through the middle',
+}
 
 // JSON schema handed to llama.cpp (via responseFormat) so the model is
 // grammar-constrained to emit exactly this shape — no fragile text parsing.
@@ -554,7 +626,8 @@ async function prepareModel (onProgress) {
  *
  * Three passes: the model first describes what is literally visible in the
  * frames, then classifies the goal-mouth zone while looking at the tail
- * frames, then scores the three judged criteria from the description alone.
+ * frames, then scores the three judged criteria from the description plus
+ * that zone, handed to the judge as a settled fact.
  * Judging from its own literal account keeps the score anchored to what is
  * actually in the clip instead of what usually happens in football highlights,
  * and answering the zone question visually keeps placement anchored to where
@@ -602,13 +675,14 @@ async function scoreClip (frames, metadata = {}) {
   // a pre-shot frame with the ball still on the ground cannot decide the
   // zone, and a left/right verdict must survive the mirror check.
   const placement = await classifyPlacement(sdk, modelId, frames)
+  const { zone } = resolveZone(placement)
 
-  // Pass 3 — judge skill/difficulty/aesthetic from the description alone (no
-  // frames), grammar-constrained to the score schema.
+  // Pass 3 — judge skill/difficulty/aesthetic from the description plus the
+  // settled zone (no frames), grammar-constrained to the score schema.
   const judged = await runCompletion(sdk, modelId, {
     history: [{
       role: 'user',
-      content: JUDGE_PROMPT_PREFIX + description + JUDGE_RUBRIC,
+      content: JUDGE_PROMPT_PREFIX + description + placementFactLine(zone) + JUDGE_RUBRIC,
     }],
     responseFormat: {
       type: 'json_schema',
@@ -820,6 +894,16 @@ function parseScore (content) {
   }
 }
 
+// Compose the zone key from the two vision commitments. Any 'unclear' row or
+// column (or anything that somehow slipped past the enum grammar) fails the
+// table lookup and maps to the lowest-value cell, same treatment as before
+// for unknown placement.
+function resolveZone (placement) {
+  const composed = `${placement?.row}_${placement?.column}`
+  const unclear = PLACEMENT_ZONE_SCORES[composed] === undefined
+  return { zone: unclear ? UNCLEAR_ZONE : composed, unclear }
+}
+
 // Normalize the raw parsed object into our canonical, clamped shape and add the
 // derived total, so downstream code (and compareClips) can rely on it.
 // Placement is special: its zone comes from the vision pass, never the judge,
@@ -835,22 +919,66 @@ function finalizeScore (parsed, placement, meta) {
     }
   }
 
-  // The zone key is composed from the two vision commitments. Any 'unclear'
-  // row or column (or anything that somehow slipped past the enum grammar)
-  // fails the table lookup and maps to the lowest-value cell, same treatment
-  // as before for unknown placement.
-  const composed = `${placement?.row}_${placement?.column}`
-  const unclear = PLACEMENT_ZONE_SCORES[composed] === undefined
-  const zone = unclear ? UNCLEAR_ZONE : composed
-  let explanation = String(placement?.explanation ?? '').trim() || '(no explanation returned)'
-  if (unclear) {
-    explanation = `Ball's entry into the goal was unclear, scored as ${zone.replace('_', ' ')}. ${explanation}`
-  } else if (placement?.sideUnverified) {
-    explanation = `${explanation} (Which side of the goal could not be verified from the frames, so the shot is scored through the center of its row.)`
+  const { zone, unclear } = resolveZone(placement)
+  // The model's own words are shown only when the verdict was clear and any
+  // left/right call survived the mirror check. Otherwise the shown text is
+  // composed from the final zone — players get a plain statement of where
+  // the ball went, never narration about unverified sides or defaulted
+  // cells.
+  let explanation = String(placement?.explanation ?? '').trim()
+  if (unclear || placement?.sideUnverified || !explanation) {
+    explanation = `The ball went ${PLACEMENT_ZONE_PHRASES[zone]}.`
   }
   scores.placement = { score: PLACEMENT_ZONE_SCORES[zone], zone, explanation }
 
+  warnOnDuplicateExplanations(scores)
+
   return { scores, total: sumScores(scores), ...meta }
+}
+
+// Each criterion is instructed to reason about different things, so two
+// matching "why" texts mean the model copy-pasted one justification across
+// criteria. That is a prompt bug we want to see during testing, so it is
+// logged loudly instead of shipped silently to the players.
+function warnOnDuplicateExplanations (scores) {
+  const entries = SCORE_FIELDS.map((field) => ({
+    field,
+    text: normalizeExplanation(scores[field]?.explanation),
+  })).filter((entry) => entry.text.length > 0)
+
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      if (nearIdentical(entries[i].text, entries[j].text)) {
+        console.error(
+          `[qvac] BUG: near-identical explanations for "${entries[i].field}" and ` +
+          `"${entries[j].field}": ${JSON.stringify(scores[entries[i].field].explanation)}`
+        )
+      }
+    }
+  }
+}
+
+// Case, punctuation, and spacing differences don't count as different text.
+function normalizeExplanation (text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Exact match after normalization, or near-total word overlap — a copy-paste
+// with a couple of words swapped still counts as the same text.
+function nearIdentical (a, b) {
+  if (a === b) return true
+  const wordsA = new Set(a.split(' '))
+  const wordsB = new Set(b.split(' '))
+  let shared = 0
+  for (const word of wordsA) {
+    if (wordsB.has(word)) shared++
+  }
+  const union = wordsA.size + wordsB.size - shared
+  return union > 0 && shared / union >= 0.9
 }
 
 // Deterministic offline stand-in used only when QVAC_MOCK_SCORING=1.
@@ -894,4 +1022,5 @@ module.exports = {
   scoreClip,
   classifyPlacement,
   compareClips,
+  finalizeScore,
 }

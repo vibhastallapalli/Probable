@@ -4,12 +4,19 @@ const escrow = require('./escrow')
 const scoring = require('./scoring')
 
 /**
- * Compare two pre-scored clips and, if there is a clear winner and the match
- * wallet is funded, release the full USDT balance to that winner.
+ * Decide the match winner and, if there is one and the match wallet is
+ * funded, release the full USDT balance to that winner.
+ *
+ * The winner comes from the head-to-head verdict — both clips judged side by
+ * side (scoring.compareHeadToHead) — not from comparing two solo totals.
+ * The caller normally passes the verdict it already computed and showed to
+ * the players, so settlement never re-runs the model; when no verdict is
+ * passed, one is computed here, falling back to the totals comparison only
+ * for legacy score objects that carry no frame paths.
  *
  * Returns a single result object whose `outcome` is one of:
  *   'unfunded'        — match wallet has no USDT yet; nothing was touched
- *   'tied'            — both clips scored identically; escrow left intact for human review
+ *   'tied'            — the verdict is a dead heat; escrow left intact for human review
  *   'already_settled' — escrow already paid out; the recorded result is returned, no transfer
  *   'settled'         — winner determined, transfer sent, escrow settled
  *
@@ -18,9 +25,10 @@ const scoring = require('./scoring')
  * @param {object} clipB     - scoreClip() result for participant B
  * @param {string} addressA  - EVM address of participant A
  * @param {string} addressB  - EVM address of participant B
+ * @param {object} [verdict] - Precomputed compareHeadToHead() verdict
  * @returns {Promise<object>}
  */
-async function settleMatch (matchId, clipA, clipB, addressA, addressB) {
+async function settleMatch (matchId, clipA, clipB, addressA, addressB, verdict) {
   const status = await escrow.getEscrowStatus(matchId)
 
   // A settled escrow has already paid out. Never move money a second time —
@@ -44,31 +52,44 @@ async function settleMatch (matchId, clipA, clipB, addressA, addressB) {
     }
   }
 
-  const comparison = scoring.compareClips(clipA, clipB)
+  // Winner source: the head-to-head verdict. The totals comparison is kept
+  // alongside purely as supporting detail in the returned result.
+  const validVerdict = verdict && ['A', 'B', 'tie'].includes(verdict.winner)
+  const headToHead = validVerdict
+    ? verdict
+    : scoring.canCompareHeadToHead(clipA, clipB)
+      ? await scoring.compareHeadToHead(clipA, clipB)
+      : null
+  const detail = scoring.compareClips(clipA, clipB)
+  const winner = headToHead ? headToHead.winner : detail.winner
 
-  if (comparison.winner === 'tie') {
+  if (winner === 'tie') {
     return {
       outcome: 'tied',
       matchId,
-      totalA: comparison.totalA,
-      totalB: comparison.totalB,
-      margin: comparison.margin,
-      breakdown: comparison.breakdown
+      summary: headToHead?.summary,
+      verdict: headToHead,
+      totalA: detail.totalA,
+      totalB: detail.totalB,
+      margin: detail.margin,
+      breakdown: detail.breakdown
     }
   }
 
-  const winnerAddress = comparison.winner === 'A' ? addressA : addressB
+  const winnerAddress = winner === 'A' ? addressA : addressB
   const release = await escrow.releaseEscrow(matchId, winnerAddress)
 
   return {
     outcome: 'settled',
     matchId,
-    winner: comparison.winner,
+    winner,
     winnerAddress,
-    margin: comparison.margin,
-    totalA: comparison.totalA,
-    totalB: comparison.totalB,
-    breakdown: comparison.breakdown,
+    summary: headToHead?.summary,
+    verdict: headToHead,
+    margin: detail.margin,
+    totalA: detail.totalA,
+    totalB: detail.totalB,
+    breakdown: detail.breakdown,
     payout: release.payout,
     txHash: release.txHash,
     releasedAt: release.releasedAt

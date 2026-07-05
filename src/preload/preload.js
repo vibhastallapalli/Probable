@@ -45,7 +45,9 @@ contextBridge.exposeInMainWorld('probable', {
   },
 
   match: {
-    settle: (matchId, clipA, clipB, addressA, addressB) =>
-      ipcRenderer.invoke('match:settle', matchId, clipA, clipB, addressA, addressB),
+    compare: (clipA, clipB) =>
+      ipcRenderer.invoke('match:compare', clipA, clipB),
+    settle: (matchId, clipA, clipB, addressA, addressB, verdict) =>
+      ipcRenderer.invoke('match:settle', matchId, clipA, clipB, addressA, addressB, verdict),
   },
 })

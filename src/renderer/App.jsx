@@ -12,6 +12,17 @@ const RUBRIC = [
   { key: 'placement', label: 'Placement', gloss: 'where in the goal the shot lands' },
 ]
 
+// The four head-to-head dimensions the match verdict is decided on, in
+// display order. Keys match the `dimensions` field of the verdict; distance,
+// speed, and technique come from the side-by-side comparison call, placement
+// from the two clips' zone verdicts.
+const VERDICT_DIMENSIONS = [
+  { key: 'distance', label: 'Distance', gloss: 'who shot from further out' },
+  { key: 'speed', label: 'Shot speed', gloss: 'whose shot flew faster' },
+  { key: 'technique', label: 'Strike', gloss: 'who caught it cleaner' },
+  { key: 'placement', label: 'Placement', gloss: 'who found the better spot' },
+]
+
 // Plain-words labels for the 9 goal-mouth zones the placement criterion is
 // classified into (3 rows x 3 columns, split by the crossbar and goalposts).
 // Keys match the `zone` field the scorer returns; the score is derived from
@@ -92,6 +103,8 @@ export default function App () {
   const [clipScore, setClipScore] = useState(null)
   const [clipScoreA, setClipScoreA] = useState(null)
   const [clipScoreB, setClipScoreB] = useState(null)
+  const [verdict, setVerdict] = useState(null)
+  const [comparing, setComparing] = useState(false)
   const [settleResult, setSettleResult] = useState(null)
 
   const emit = (msg) => setLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev])
@@ -272,9 +285,31 @@ export default function App () {
     }
   }
 
+  // The head-to-head call: both clips' key frames judged side by side on
+  // this device. Its verdict is the headline result and what settles the
+  // match; the per-clip scorecards stay visible as supporting detail.
+  async function handleCompare () {
+    if (!clipScoreA || !clipScoreB) return
+    setComparing(true)
+    try {
+      emit('Judging both clips side by side on this device…')
+      const result = await window.probable.match.compare(clipScoreA, clipScoreB)
+      setVerdict(result)
+      emit(result.winner === 'tie'
+        ? 'Head-to-head verdict: dead even'
+        : `Head-to-head verdict: Player ${result.winner} wins`)
+    } catch (err) {
+      emit(`Head-to-head failed: ${err.message}`)
+    } finally {
+      setComparing(false)
+    }
+  }
+
   async function handleSettle () {
     try {
-      const result = await window.probable.match.settle(escrowId, clipScoreA, clipScoreB, playerA, playerB)
+      // Pass the verdict already shown to the players, so settlement pays out
+      // exactly the result they saw and never re-runs the model.
+      const result = await window.probable.match.settle(escrowId, clipScoreA, clipScoreB, playerA, playerB, verdict)
       setSettleResult(result)
       if (result.outcome === 'unfunded') {
         emit(`Settle: unfunded, match wallet balance is ${result.balance} USDT`)
@@ -533,10 +568,11 @@ export default function App () {
               {clipScore.mock ? ' · MOCK' : ''} · {clipScore.frameCount} frames
             </p>
             <div style={{ marginTop: 6, display: 'flex', gap: 8 }}>
-              <button onClick={() => { setClipScoreA(clipScore); emit(`Clip A assigned (total ${clipScore.total} of 40)`) }}>
+              {/* Assigning a clip invalidates any verdict computed from the old pair. */}
+              <button onClick={() => { setClipScoreA(clipScore); setVerdict(null); emit(`Clip A assigned (total ${clipScore.total} of 40)`) }}>
                 Assign → Clip A (Player A)
               </button>
-              <button onClick={() => { setClipScoreB(clipScore); emit(`Clip B assigned (total ${clipScore.total} of 40)`) }}>
+              <button onClick={() => { setClipScoreB(clipScore); setVerdict(null); emit(`Clip B assigned (total ${clipScore.total} of 40)`) }}>
                 Assign → Clip B (Player B)
               </button>
             </div>
@@ -560,15 +596,85 @@ export default function App () {
       </section>
 
       <section style={{ marginBottom: 24 }}>
+        <strong>Head-to-head verdict [decides the match]</strong>
+        <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
+          Both clips judged side by side in one on-device call — who shot from further out,
+          whose shot flew faster, who struck it cleaner — plus placement from each clip's goal zone
+        </p>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={handleCompare} disabled={!clipScoreA || !clipScoreB || comparing}>
+            {comparing ? 'Judging head-to-head…' : 'Run head-to-head'}
+          </button>
+        </div>
+
+        {verdict && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{
+              padding: 16,
+              background: verdict.winner === 'tie' ? '#2a1c0e' : '#0e2418',
+              border: `2px solid ${verdict.winner === 'tie' ? '#e67e22' : '#2ecc71'}`,
+              borderRadius: 6,
+            }}>
+              <div style={{
+                fontSize: 22,
+                fontWeight: 'bold',
+                letterSpacing: 1,
+                color: verdict.winner === 'tie' ? '#e67e22' : '#2ecc71',
+              }}>
+                {verdict.winner === 'tie' ? 'DEAD EVEN' : `PLAYER ${verdict.winner} WINS`}
+                {verdict.winner !== 'tie' && (
+                  <span style={{ fontSize: 13, fontWeight: 'normal', color: '#c8ccd2' }}>
+                    {' '}· {verdict.points.a}–{verdict.points.b} on the four measures
+                    {verdict.tiebreak ? ` · settled by ${verdict.tiebreak === 'spectacle' ? 'the better finish' : 'the scorecards'}` : ''}
+                    {verdict.mock ? ' · MOCK' : ''}
+                  </span>
+                )}
+              </div>
+              <p style={{ margin: '10px 0 0', fontSize: 14, lineHeight: 1.6 }}>
+                {verdict.summary}
+              </p>
+            </div>
+
+            {VERDICT_DIMENSIONS.map(({ key, label, gloss }) => (
+              <div key={key} style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
+                <div>
+                  <strong>{label}</strong> <span style={{ color: '#8a8f98' }}>[{gloss}]</span>:{' '}
+                  <span style={{ color: verdict.dimensions[key].winner === 'equal' ? '#8a8f98' : '#2ecc71' }}>
+                    {verdict.dimensions[key].winner === 'equal' ? 'even' : `Player ${verdict.dimensions[key].winner}`}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: '#c8ccd2', marginTop: 4 }}>
+                  Why: {verdict.dimensions[key].reason}
+                </div>
+              </div>
+            ))}
+            <div style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
+              <div>
+                <strong>Spectacle</strong> <span style={{ color: '#8a8f98' }}>[tiebreaker only]</span>:{' '}
+                <span style={{ color: verdict.spectacle.pick === 'equal' ? '#8a8f98' : '#2ecc71' }}>
+                  {verdict.spectacle.pick === 'equal' ? 'even' : `Player ${verdict.spectacle.pick}`}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: '#c8ccd2', marginTop: 4 }}>
+                Why: {verdict.spectacle.reason}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
         <strong>Match settlement</strong>
         <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
           Clip A: {clipScoreA ? `scored (${clipScoreA.total} of 40)` : 'not assigned'} ·
-          Clip B: {clipScoreB ? `scored (${clipScoreB.total} of 40)` : 'not assigned'}
+          Clip B: {clipScoreB ? `scored (${clipScoreB.total} of 40)` : 'not assigned'} ·
+          Verdict: {verdict ? (verdict.winner === 'tie' ? 'dead even' : `Player ${verdict.winner}`) : 'not run yet'}
         </p>
         <div style={{ marginTop: 8 }}>
+          {/* Settlement pays out the head-to-head verdict, so it requires one. */}
           <button
             onClick={handleSettle}
-            disabled={!escrowId || !clipScoreA || !clipScoreB || settled}
+            disabled={!escrowId || !clipScoreA || !clipScoreB || !verdict || settled}
           >
             Settle match
           </button>

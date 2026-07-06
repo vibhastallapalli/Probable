@@ -50,4 +50,18 @@ contextBridge.exposeInMainWorld('probable', {
     settle: (matchId, clipA, clipB, addressA, addressB, verdict) =>
       ipcRenderer.invoke('match:settle', matchId, clipA, clipB, addressA, addressB, verdict),
   },
+
+  predict: {
+    getScorers: () => ipcRenderer.invoke('predict:get-scorers'),
+    computeOdds: (playerA, playerB) =>
+      ipcRenderer.invoke('predict:compute-odds', playerA, playerB),
+    createBet: (opts) => ipcRenderer.invoke('predict:create-bet', opts),
+    listBets: () => ipcRenderer.invoke('predict:list-bets'),
+    deleteBets: (ids) => ipcRenderer.invoke('predict:delete-bets', ids),
+    getBetStatus: (betId) => ipcRenderer.invoke('predict:get-bet-status', betId),
+    submitClip: (betId, side, clipScore) =>
+      ipcRenderer.invoke('predict:submit-clip', betId, side, clipScore),
+    settleBet: (betId, verdict) =>
+      ipcRenderer.invoke('predict:settle-bet', betId, verdict),
+  },
 })

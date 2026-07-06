@@ -5,6 +5,7 @@ const wallet = require('./wallet')
 const escrow = require('./escrow')
 const scoring = require('./scoring')
 const settlement = require('./settlement')
+const predict = require('./predict')
 
 function registerHandlers () {
   ipcMain.handle('wallet:get-address', () => {
@@ -89,6 +90,44 @@ function registerHandlers () {
   // players, passed through so settlement never re-runs the model.
   ipcMain.handle('match:settle', (_event, matchId, clipA, clipB, addressA, addressB, verdict) => {
     return settlement.settleMatch(matchId, clipA, clipB, addressA, addressB, verdict)
+  })
+
+  // -------------------------------------------------------------------------
+  // Predict mode — goal bet flow backed by the same escrow / settlement system
+  // -------------------------------------------------------------------------
+
+  ipcMain.handle('predict:get-scorers', () => {
+    return predict.getGoalScorers()
+  })
+
+  ipcMain.handle('predict:compute-odds', async (_event, playerA, playerB) => {
+    const data = await predict.loadTournamentData()
+    const odds = require('./odds')
+    return odds.computeOdds(playerA, playerB, data)
+  })
+
+  ipcMain.handle('predict:create-bet', (_event, opts) => {
+    return predict.createBet(opts)
+  })
+
+  ipcMain.handle('predict:list-bets', () => {
+    return predict.listBets()
+  })
+
+  ipcMain.handle('predict:delete-bets', (_event, ids) => {
+    return predict.deleteBets(ids)
+  })
+
+  ipcMain.handle('predict:get-bet-status', (_event, betId) => {
+    return predict.getBetStatus(betId)
+  })
+
+  ipcMain.handle('predict:submit-clip', (_event, betId, side, clipScore) => {
+    return predict.submitClip(betId, side, clipScore)
+  })
+
+  ipcMain.handle('predict:settle-bet', (_event, betId, verdict) => {
+    return predict.settleBet(betId, verdict)
   })
 }
 

@@ -51,33 +51,33 @@ function roundFps (fps) {
   return Math.round(fps * 10) / 10
 }
 
+// Status → pill styling. Green for paid-out terminal states, amber for
+// forfeits, red for dead ends, neutral gray otherwise.
+function statusPillClass (status) {
+  if (status === 'settled' || status === 'released') return 'pill pill--ok'
+  if (status === 'forfeited') return 'pill pill--warn'
+  if (status === 'unresolved') return 'pill pill--bad'
+  return 'pill'
+}
+
 // Always visible proof of QVAC compliance: which model, where it runs, and
 // that nothing gets uploaded. Flips to an amber mock warning when the last
 // score came from the offline stand in, so the badge never overclaims.
 function StatusBadge ({ modelInfo, mockMode }) {
-  const accent = mockMode ? '#e67e22' : '#2ecc71'
   return (
-    <div
-      title={modelInfo.id}
-      style={{
-        position: 'fixed',
-        top: 12,
-        right: 12,
-        zIndex: 1000,
-        padding: '8px 12px',
-        background: mockMode ? '#2a1c0e' : '#0e2418',
-        border: `1px solid ${accent}`,
-        borderRadius: 6,
-        fontSize: 11,
-        lineHeight: 1.7,
-      }}
-    >
-      <div style={{ color: accent, fontWeight: 'bold', letterSpacing: 1 }}>
-        {mockMode ? '● MOCK MODE [no model loaded]' : '● ON DEVICE AI [QVAC]'}
+    <div className={mockMode ? 'ai ai--mock' : 'ai'} title={modelInfo.id}>
+      <div>
+        <div className="ai__title">
+          <span className="dot dot--pulse" />
+          {mockMode ? 'MOCK MODE [NO MODEL LOADED]' : 'ON-DEVICE AI [QVAC]'}
+        </div>
+        <div className="ai__row">model <b>{modelInfo.name}</b></div>
+        <div className="ai__row">inference <b>{mockMode ? 'offline stand-in, not the real model' : 'on device, zero cloud calls'}</b></div>
       </div>
-      <div>Model: {modelInfo.name}</div>
-      <div>Inference: {mockMode ? 'offline stand in, not the real model' : 'on device, zero cloud calls'}</div>
-      <div>Bytes uploaded: 0</div>
+      <div className="ai__meter">
+        <div className="ai__zero">0</div>
+        <div className="ai__zerolabel">BYTES<br />UPLOADED</div>
+      </div>
     </div>
   )
 }
@@ -337,395 +337,371 @@ export default function App () {
   const settled = escrowRecord?.status === 'settled' || escrowRecord?.status === 'released'
 
   return (
-    <div style={{ fontFamily: 'monospace', padding: 24, background: '#0f1115', color: '#f2f3f5', minHeight: '100vh' }}>
+    <div className="app">
       <StatusBadge modelInfo={modelInfo} mockMode={clipScore?.mock === true} />
-      <h2>Probable</h2>
+      <div className="container">
+        <header className="topbar">
+          <span className="wordmark">Probable</span>
+          <span className="tagline">P2P football wagers · judged on device · settled in USDt</span>
+        </header>
 
-      {/* Tab switcher */}
-      <div style={{ display: 'flex', gap: 0, marginBottom: 24 }}>
-        {['judge', 'predict'].map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              padding: '10px 28px',
-              fontFamily: 'monospace',
-              fontSize: 13,
-              fontWeight: tab === t ? 'bold' : 'normal',
-              letterSpacing: 1,
-              textTransform: 'uppercase',
-              background: tab === t ? '#1a1d23' : 'transparent',
-              color: tab === t ? '#f2f3f5' : '#8a8f98',
-              border: tab === t ? '1px solid #444' : '1px solid transparent',
-              borderBottom: tab === t ? '2px solid #2ecc71' : '2px solid transparent',
-              borderRadius: '6px 6px 0 0',
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-            }}
-          >
-            {t === 'judge' ? '⚖ Judge' : '🎯 Predict'}
-          </button>
-        ))}
-      </div>
+        {/* Tab switcher */}
+        <div className="tabs">
+          {['judge', 'predict'].map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`tab ${tab === t ? 'tab--active' : ''}`}
+            >
+              {t === 'judge' ? '⚖ Judge' : '🎯 Predict'}
+            </button>
+          ))}
+        </div>
 
-      {tab === 'judge' && (<>
-      <section style={{ marginBottom: 24 }}>
-        <strong>App wallet</strong>
-        <p style={{ margin: '4px 0' }}>Address: {address ?? 'initialising…'}</p>
-      </section>
+        {tab === 'judge' && (<>
+        <section className="panel">
+          <div className="panel__head">
+            <span className="panel__title">App wallet</span>
+            {address
+              ? <span className="pill pill--ok"><span className="dot dot--pulse" />ready</span>
+              : <span className="pill">initialising</span>}
+          </div>
+          <div className="kv"><span className="kv__k">Address</span><span className="kv__v">{address ?? 'initialising…'}</span></div>
+        </section>
 
-      <section style={{ marginBottom: 24 }}>
-        <strong>Test participants</strong>
-        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label style={{ fontSize: 12 }}>
-            Player A address
+        <section className="panel">
+          <div className="panel__head"><span className="panel__title">Test participants</span></div>
+          <label className="field">
+            <span className="field__label side-a">Player A address</span>
             <input
               type="text"
               placeholder="0x…"
               value={playerA}
               onChange={(e) => setPlayerA(e.target.value.trim())}
               disabled={!!escrowId}
-              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerA && !isValidAddress(playerA) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
+              className={`input ${playerA && !isValidAddress(playerA) ? 'input--err' : ''}`}
             />
             {playerA && !isValidAddress(playerA) && (
-              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
+              <span className="field__err">Must be a 42 character 0x address</span>
             )}
           </label>
-          <label style={{ fontSize: 12 }}>
-            Player B address
+          <label className="field">
+            <span className="field__label side-b">Player B address</span>
             <input
               type="text"
               placeholder="0x…"
               value={playerB}
               onChange={(e) => setPlayerB(e.target.value.trim())}
               disabled={!!escrowId}
-              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerB && !isValidAddress(playerB) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
+              className={`input ${playerB && !isValidAddress(playerB) ? 'input--err' : ''}`}
             />
             {playerB && !isValidAddress(playerB) && (
-              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
+              <span className="field__err">Must be a 42 character 0x address</span>
             )}
           </label>
-        </div>
-        <p style={{ margin: '8px 0 4px', fontSize: 12 }}>Player A: {playerA || '(not set)'}</p>
-        <p style={{ margin: '4px 0', fontSize: 12 }}>Player B: {playerB || '(not set)'}</p>
-        <p style={{ margin: '4px 0' }}>Stake per player: {STAKE} USDt (total: {STAKE * 2} USDt)</p>
-      </section>
+          <div className="kv"><span className="kv__k">Player A</span><span className="kv__v">{playerA || '(not set)'}</span></div>
+          <div className="kv"><span className="kv__k">Player B</span><span className="kv__v">{playerB || '(not set)'}</span></div>
+          <div className="kv"><span className="kv__k">Stake</span><span className="kv__v">{STAKE} USDt per player · {STAKE * 2} USDt total</span></div>
+        </section>
 
-      <section style={{ marginBottom: 24 }}>
-        <strong>Escrow actions</strong>
-        <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button onClick={handleCreate} disabled={!!escrowId || !isValidAddress(playerA) || !isValidAddress(playerB)}>
-            Create test escrow
-          </button>
-          <input
-            type="text"
-            placeholder="Escrow ID"
-            value={loadId}
-            onChange={(e) => setLoadId(e.target.value)}
-            disabled={!!escrowId}
-            style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: '1px solid #444', borderRadius: 4, width: 280 }}
-          />
-          <button onClick={handleLoad} disabled={!!escrowId || !loadId.trim()}>
-            Load escrow
-          </button>
-          {escrowId && (
-            <>
-              <button onClick={handleRefresh}>Refresh status</button>
-              <button onClick={() => handleRelease(playerA, 'Player A')} disabled={settled}>
-                Release → Player A
-              </button>
-              <button onClick={() => handleRelease(playerB, 'Player B')} disabled={settled}>
-                Release → Player B
-              </button>
-            </>
-          )}
-        </div>
-      </section>
-
-      <section style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <strong>Saved escrows</strong>
-          {escrowList.length > 0 && (
-            <button
-              onClick={toggleDeleteMode}
-              style={{
-                fontSize: 11,
-                padding: '3px 10px',
-                background: deleteMode ? '#2a1c0e' : 'transparent',
-                color: deleteMode ? '#e67e22' : '#8a8f98',
-                border: `1px solid ${deleteMode ? '#e67e22' : '#444'}`,
-                borderRadius: 4,
-                cursor: 'pointer',
-              }}
-            >
-              {deleteMode ? 'Cancel' : 'Delete'}
+        <section className="panel">
+          <div className="panel__head"><span className="panel__title">Escrow actions</span></div>
+          <div className="bar" style={{ marginTop: 0 }}>
+            <button className="btn btn--primary" onClick={handleCreate} disabled={!!escrowId || !isValidAddress(playerA) || !isValidAddress(playerB)}>
+              Create test escrow
             </button>
-          )}
-        </div>
-
-        {deleteMode && (
-          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button
-              onClick={handleDeleteSelected}
-              disabled={deleteSelected.size === 0}
-              style={{
-                fontSize: 12,
-                padding: '4px 14px',
-                background: deleteSelected.size > 0 ? '#3d1515' : '#1a1d23',
-                color: deleteSelected.size > 0 ? '#e74c3c' : '#555',
-                border: `1px solid ${deleteSelected.size > 0 ? '#e74c3c' : '#333'}`,
-                borderRadius: 4,
-                cursor: deleteSelected.size > 0 ? 'pointer' : 'default',
-              }}
-            >
-              Delete {deleteSelected.size > 0 ? `(${deleteSelected.size})` : ''}
+            <input
+              type="text"
+              placeholder="Escrow ID"
+              value={loadId}
+              onChange={(e) => setLoadId(e.target.value)}
+              disabled={!!escrowId}
+              className="input input--mid"
+            />
+            <button className="btn" onClick={handleLoad} disabled={!!escrowId || !loadId.trim()}>
+              Load escrow
             </button>
-            <span style={{ fontSize: 11, color: '#8a8f98' }}>
-              {deleteSelected.size === 0 ? 'Select escrows to delete' : `${deleteSelected.size} selected`}
-            </span>
+            {escrowId && (
+              <>
+                <button className="btn" onClick={handleRefresh}>Refresh status</button>
+                <button className="btn btn--a" onClick={() => handleRelease(playerA, 'Player A')} disabled={settled}>
+                  Release → Player A
+                </button>
+                <button className="btn btn--b" onClick={() => handleRelease(playerB, 'Player B')} disabled={settled}>
+                  Release → Player B
+                </button>
+              </>
+            )}
           </div>
-        )}
+        </section>
 
-        {escrowList.length === 0 ? (
-          <p style={{ margin: '8px 0 0', fontSize: 12 }}>(none saved yet)</p>
-        ) : (
-          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {escrowList.map((item) => {
-              const isLoaded = item.id === escrowId
-              const isChecked = deleteSelected.has(item.id)
-              return (
-                <div
-                  key={item.id}
-                  onClick={() => deleteMode ? toggleDeleteSelect(item.id) : loadEscrow(item.id)}
-                  title={deleteMode ? (isChecked ? 'Deselect' : 'Select for deletion') : `Load ${item.id}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                    padding: '8px 10px',
-                    background: isChecked ? '#2a1515' : isLoaded ? '#16241a' : '#1a1d23',
-                    color: '#f2f3f5',
-                    border: `1px solid ${isChecked ? '#e74c3c' : isLoaded ? '#2ecc71' : '#444'}`,
-                    borderRadius: 4,
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                  }}
-                >
-                  {deleteMode && (
-                    <div style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: 3,
-                      border: `1.5px solid ${isChecked ? '#e74c3c' : '#666'}`,
-                      background: isChecked ? '#e74c3c' : 'transparent',
-                      flexShrink: 0,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}>
-                      {isChecked && <span style={{ color: '#fff', fontSize: 10, lineHeight: 1 }}>✓</span>}
-                    </div>
-                  )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div>
-                      <strong>{item.id.slice(0, 8)}…</strong> · {item.status}
-                      {typeof item.balance === 'number' ? ` · ${item.balance} USDt` : ''}
-                    </div>
-                    <div style={{ color: '#8a8f98', marginTop: 2 }}>
-                      match wallet: {item.matchWalletAddress}
+        <section className="panel">
+          <div className="panel__head">
+            <span className="panel__title">Saved escrows</span>
+            {escrowList.length > 0 && (
+              <button
+                className={`btn btn--sm ${deleteMode ? 'btn--warn' : 'btn--ghost'}`}
+                onClick={toggleDeleteMode}
+              >
+                {deleteMode ? 'Cancel' : 'Delete'}
+              </button>
+            )}
+          </div>
+
+          {deleteMode && (
+            <div className="bar" style={{ marginTop: 0, marginBottom: 8 }}>
+              <button
+                className="btn btn--sm btn--danger"
+                onClick={handleDeleteSelected}
+                disabled={deleteSelected.size === 0}
+              >
+                Delete {deleteSelected.size > 0 ? `(${deleteSelected.size})` : ''}
+              </button>
+              <span className="micro">
+                {deleteSelected.size === 0 ? 'Select escrows to delete' : `${deleteSelected.size} selected`}
+              </span>
+            </div>
+          )}
+
+          {escrowList.length === 0 ? (
+            <p className="micro" style={{ margin: 0 }}>(none saved yet)</p>
+          ) : (
+            <div className="stack" style={{ marginTop: 0 }}>
+              {escrowList.map((item) => {
+                const isLoaded = item.id === escrowId
+                const isChecked = deleteSelected.has(item.id)
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => deleteMode ? toggleDeleteSelect(item.id) : loadEscrow(item.id)}
+                    title={deleteMode ? (isChecked ? 'Deselect' : 'Select for deletion') : `Load ${item.id}`}
+                    className={`row ${isChecked ? 'row--checked' : isLoaded ? 'row--loaded' : ''}`}
+                  >
+                    {deleteMode && (
+                      <div className={`checkbox ${isChecked ? 'checkbox--on' : ''}`}>
+                        {isChecked && <span className="checkbox__tick">✓</span>}
+                      </div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div>
+                        <strong>{item.id.slice(0, 8)}…</strong> · {item.status}
+                        {typeof item.balance === 'number' ? ` · ${item.balance} USDt` : ''}
+                      </div>
+                      <div className="row__meta">
+                        match wallet: {item.matchWalletAddress}
+                      </div>
                     </div>
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </section>
+                )
+              })}
+            </div>
+          )}
+        </section>
 
-      {escrowRecord && (
-        <section style={{ marginBottom: 24 }}>
-          <strong>Escrow state</strong>
-          {settled && (
-            <div style={{ margin: '8px 0', padding: 12, background: '#0e2418', border: '1px solid #2ecc71', borderRadius: 4, fontSize: 12 }}>
-              <div style={{ color: '#2ecc71', fontWeight: 'bold', letterSpacing: 1, marginBottom: 6 }}>● SETTLED · PAID OUT</div>
-              <div>Winner: {escrowRecord.winner ?? '(unknown)'}</div>
-              <div style={{ marginTop: 4 }}>
-                Payout tx:{' '}
-                {escrowRecord.txHash ? (
+        {escrowRecord && (
+          <section className="panel">
+            <div className="panel__head">
+              <span className="panel__title">Escrow state</span>
+              <span className={statusPillClass(escrowRecord.status)}>{escrowRecord.status}</span>
+            </div>
+            {settled && (
+              <div className="receipt" style={{ marginTop: 0, marginBottom: 12 }}>
+                <div className="receipt__status"><span className="dot dot--pulse" /> Settled · paid out</div>
+                <hr className="receipt__divider" />
+                <div className="kv"><span className="kv__k">Winner</span><span className="kv__v">{escrowRecord.winner ?? '(unknown)'}</span></div>
+                <div className="kv"><span className="kv__k">Payout tx</span><span className="kv__v">
+                  {escrowRecord.txHash ? (
+                    <a
+                      className="hashlink"
+                      href={`https://sepolia.etherscan.io/tx/${escrowRecord.txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {escrowRecord.txHash}
+                    </a>
+                  ) : '(not recorded)'}
+                </span></div>
+                {escrowRecord.txHash && (
                   <a
+                    className="receipt__link"
                     href={`https://sepolia.etherscan.io/tx/${escrowRecord.txHash}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    style={{ color: '#5dade2', wordBreak: 'break-all' }}
                   >
-                    {escrowRecord.txHash}
+                    View on Sepolia Etherscan ↗
                   </a>
-                ) : '(not recorded)'}
+                )}
               </div>
+            )}
+            <div className="kv"><span className="kv__k">ID</span><span className="kv__v">{escrowRecord.id}</span></div>
+            <div className="kv"><span className="kv__k">Status</span><span className="kv__v">{escrowRecord.status}</span></div>
+            {typeof escrowRecord.balance === 'number' && (
+              <div className="kv"><span className="kv__k">Balance</span><span className="kv__v">{escrowRecord.balance} USDt</span></div>
+            )}
+            {escrowRecord.matchWalletAddress && (
+              <div className="kv"><span className="kv__k">Match wallet</span><span className="kv__v">{escrowRecord.matchWalletAddress}</span></div>
+            )}
+            <details className="raw">
+              <summary>Raw escrow record</summary>
+              <pre className="json">{JSON.stringify(escrowRecord, null, 2)}</pre>
+            </details>
+          </section>
+        )}
+
+        <section className="panel">
+          <div className="panel__head"><span className="panel__title">Clip scoring [judged on this device via QVAC]</span></div>
+          <p className="hint">
+            Scored on the four FIFA Puskas Award criteria [the rubric FIFA uses for its own goal of the year]
+          </p>
+          <div className="kv"><span className="kv__k">Clip</span><span className="kv__v">{videoPath ?? '(none selected)'}</span></div>
+          {clipProbe?.lowFps && (
+            <p className="warn-note">
+              ⚠ This clip is {roundFps(clipProbe.fps)} fps, under {clipProbe.minFps} fps, so scoring may be less reliable
+            </p>
+          )}
+          <div className="bar">
+            <button className="btn" onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
+            <button className="btn btn--primary" onClick={handleScoreClip} disabled={!videoPath || scoring}>
+              {scoring ? (preparingModel ? 'Preparing model…' : 'Scoring…') : 'Run scoreClip'}
+            </button>
+          </div>
+
+          {clipScore && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                <span className="score-big">{clipScore.total} <small>/ 40</small></span>
+                <span className="pill">{clipScore.model}</span>
+                {clipScore.mock && <span className="pill pill--warn">mock</span>}
+                <span className="micro">{clipScore.frameCount} frames</span>
+              </div>
+              <div className="bar">
+                {/* Assigning a clip invalidates any verdict computed from the old pair. */}
+                <button className="btn btn--a" onClick={() => { setClipScoreA(clipScore); setVerdict(null); emit(`Clip A assigned (total ${clipScore.total} of 40)`) }}>
+                  Assign → Clip A (Player A)
+                </button>
+                <button className="btn btn--b" onClick={() => { setClipScoreB(clipScore); setVerdict(null); emit(`Clip B assigned (total ${clipScore.total} of 40)`) }}>
+                  Assign → Clip B (Player B)
+                </button>
+              </div>
+              {RUBRIC.map(({ key, label, gloss }) => (
+                <div key={key} className="card">
+                  <div>
+                    <span className="card__title">{label}</span>{' '}
+                    <span className="card__gloss">[{gloss}]</span>{' '}
+                    <span className="card__val">— {clipScore.scores[key].score} of 10</span>
+                    {key === 'placement' && clipScore.scores[key].zone && (
+                      <span className="zone">
+                        {' '}· zone: {ZONE_LABELS[clipScore.scores[key].zone] ?? clipScore.scores[key].zone}
+                      </span>
+                    )}
+                  </div>
+                  <div className="card__why">
+                    Why: {clipScore.scores[key].explanation}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
-          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12 }}>
-            {JSON.stringify(escrowRecord, null, 2)}
-          </pre>
         </section>
-      )}
 
-      <section style={{ marginBottom: 24 }}>
-        <strong>Clip scoring [judged on this device via QVAC]</strong>
-        <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
-          Scored on the four FIFA Puskas Award criteria [the rubric FIFA uses for its own goal of the year]
-        </p>
-        <p style={{ margin: '4px 0' }}>Clip: {videoPath ?? '(none selected)'}</p>
-        {clipProbe?.lowFps && (
-          <p style={{ margin: '4px 0', fontSize: 12, color: '#e67e22' }}>
-            ⚠ This clip is {roundFps(clipProbe.fps)} fps, under {clipProbe.minFps} fps, so scoring may be less reliable
+        <section className="panel">
+          <div className="panel__head"><span className="panel__title">Head-to-head verdict [decides the match]</span></div>
+          <p className="hint">
+            Both clips judged side by side in one on-device call — who shot from further out,
+            whose shot flew faster, who struck it cleaner — plus placement from each clip's goal zone
           </p>
-        )}
-        <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
-          <button onClick={handleScoreClip} disabled={!videoPath || scoring}>
-            {scoring ? (preparingModel ? 'Preparing model…' : 'Scoring…') : 'Run scoreClip'}
-          </button>
-        </div>
+          <div className="bar" style={{ marginTop: 0 }}>
+            <button className="btn btn--primary" onClick={handleCompare} disabled={!clipScoreA || !clipScoreB || comparing}>
+              {comparing ? 'Judging head-to-head…' : 'Run head-to-head'}
+            </button>
+          </div>
 
-        {clipScore && (
-          <div style={{ marginTop: 12 }}>
-            <p style={{ margin: '4px 0' }}>
-              Total: <strong>{clipScore.total} of 40</strong> · model: {clipScore.model}
-              {clipScore.mock ? ' · MOCK' : ''} · {clipScore.frameCount} frames
-            </p>
-            <div style={{ marginTop: 6, display: 'flex', gap: 8 }}>
-              {/* Assigning a clip invalidates any verdict computed from the old pair. */}
-              <button onClick={() => { setClipScoreA(clipScore); setVerdict(null); emit(`Clip A assigned (total ${clipScore.total} of 40)`) }}>
-                Assign → Clip A (Player A)
-              </button>
-              <button onClick={() => { setClipScoreB(clipScore); setVerdict(null); emit(`Clip B assigned (total ${clipScore.total} of 40)`) }}>
-                Assign → Clip B (Player B)
-              </button>
-            </div>
-            {RUBRIC.map(({ key, label, gloss }) => (
-              <div key={key} style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
-                <div>
-                  <strong>{label}</strong> <span style={{ color: '#8a8f98' }}>[{gloss}]</span>: {clipScore.scores[key].score} of 10
-                  {key === 'placement' && clipScore.scores[key].zone && (
-                    <span style={{ color: '#5dade2' }}>
-                      {' '}· zone: {ZONE_LABELS[clipScore.scores[key].zone] ?? clipScore.scores[key].zone}
+          {verdict && (
+            <div style={{ marginTop: 14 }}>
+              <div className={`verdict ${verdict.winner === 'tie' ? 'verdict--tie' : verdict.winner === 'B' ? 'verdict--b' : ''}`}>
+                <div className="verdict__head">
+                  {verdict.winner === 'tie' ? 'DEAD EVEN' : `PLAYER ${verdict.winner} WINS`}
+                  {verdict.winner !== 'tie' && (
+                    <span className="verdict__meta">
+                      {' '}· {verdict.points.a}–{verdict.points.b} on the four measures
+                      {verdict.tiebreak ? ` · settled by ${verdict.tiebreak === 'spectacle' ? 'the better finish' : 'the scorecards'}` : ''}
+                      {verdict.mock ? ' · MOCK' : ''}
                     </span>
                   )}
                 </div>
-                <div style={{ fontSize: 12, color: '#c8ccd2', marginTop: 4 }}>
-                  Why: {clipScore.scores[key].explanation}
+                <p className="verdict__summary">
+                  {verdict.summary}
+                </p>
+              </div>
+
+              {VERDICT_DIMENSIONS.map(({ key, label, gloss }) => (
+                <div key={key} className="card">
+                  <div>
+                    <span className="card__title">{label}</span>{' '}
+                    <span className="card__gloss">[{gloss}]</span>:{' '}
+                    <span className={`card__val ${verdict.dimensions[key].winner === 'equal' ? 'even' : verdict.dimensions[key].winner === 'A' ? 'side-a' : 'side-b'}`}>
+                      {verdict.dimensions[key].winner === 'equal' ? 'even' : `Player ${verdict.dimensions[key].winner}`}
+                    </span>
+                  </div>
+                  <div className="card__why">
+                    Why: {verdict.dimensions[key].reason}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section style={{ marginBottom: 24 }}>
-        <strong>Head-to-head verdict [decides the match]</strong>
-        <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
-          Both clips judged side by side in one on-device call — who shot from further out,
-          whose shot flew faster, who struck it cleaner — plus placement from each clip's goal zone
-        </p>
-        <div style={{ marginTop: 8 }}>
-          <button onClick={handleCompare} disabled={!clipScoreA || !clipScoreB || comparing}>
-            {comparing ? 'Judging head-to-head…' : 'Run head-to-head'}
-          </button>
-        </div>
-
-        {verdict && (
-          <div style={{ marginTop: 12 }}>
-            <div style={{
-              padding: 16,
-              background: verdict.winner === 'tie' ? '#2a1c0e' : '#0e2418',
-              border: `2px solid ${verdict.winner === 'tie' ? '#e67e22' : '#2ecc71'}`,
-              borderRadius: 6,
-            }}>
-              <div style={{
-                fontSize: 22,
-                fontWeight: 'bold',
-                letterSpacing: 1,
-                color: verdict.winner === 'tie' ? '#e67e22' : '#2ecc71',
-              }}>
-                {verdict.winner === 'tie' ? 'DEAD EVEN' : `PLAYER ${verdict.winner} WINS`}
-                {verdict.winner !== 'tie' && (
-                  <span style={{ fontSize: 13, fontWeight: 'normal', color: '#c8ccd2' }}>
-                    {' '}· {verdict.points.a}–{verdict.points.b} on the four measures
-                    {verdict.tiebreak ? ` · settled by ${verdict.tiebreak === 'spectacle' ? 'the better finish' : 'the scorecards'}` : ''}
-                    {verdict.mock ? ' · MOCK' : ''}
-                  </span>
-                )}
-              </div>
-              <p style={{ margin: '10px 0 0', fontSize: 14, lineHeight: 1.6 }}>
-                {verdict.summary}
-              </p>
-            </div>
-
-            {VERDICT_DIMENSIONS.map(({ key, label, gloss }) => (
-              <div key={key} style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
+              ))}
+              <div className="card">
                 <div>
-                  <strong>{label}</strong> <span style={{ color: '#8a8f98' }}>[{gloss}]</span>:{' '}
-                  <span style={{ color: verdict.dimensions[key].winner === 'equal' ? '#8a8f98' : '#2ecc71' }}>
-                    {verdict.dimensions[key].winner === 'equal' ? 'even' : `Player ${verdict.dimensions[key].winner}`}
+                  <span className="card__title">Spectacle</span>{' '}
+                  <span className="card__gloss">[tiebreaker only]</span>:{' '}
+                  <span className={`card__val ${verdict.spectacle.pick === 'equal' ? 'even' : verdict.spectacle.pick === 'A' ? 'side-a' : 'side-b'}`}>
+                    {verdict.spectacle.pick === 'equal' ? 'even' : `Player ${verdict.spectacle.pick}`}
                   </span>
                 </div>
-                <div style={{ fontSize: 12, color: '#c8ccd2', marginTop: 4 }}>
-                  Why: {verdict.dimensions[key].reason}
+                <div className="card__why">
+                  Why: {verdict.spectacle.reason}
                 </div>
               </div>
-            ))}
-            <div style={{ margin: '8px 0', padding: 10, background: '#1a1d23', borderRadius: 4 }}>
-              <div>
-                <strong>Spectacle</strong> <span style={{ color: '#8a8f98' }}>[tiebreaker only]</span>:{' '}
-                <span style={{ color: verdict.spectacle.pick === 'equal' ? '#8a8f98' : '#2ecc71' }}>
-                  {verdict.spectacle.pick === 'equal' ? 'even' : `Player ${verdict.spectacle.pick}`}
-                </span>
-              </div>
-              <div style={{ fontSize: 12, color: '#c8ccd2', marginTop: 4 }}>
-                Why: {verdict.spectacle.reason}
-              </div>
             </div>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel__head"><span className="panel__title">Match settlement</span></div>
+          <div className="kv"><span className="kv__k">Clip A</span><span className="kv__v side-a">{clipScoreA ? `scored (${clipScoreA.total} of 40)` : 'not assigned'}</span></div>
+          <div className="kv"><span className="kv__k">Clip B</span><span className="kv__v side-b">{clipScoreB ? `scored (${clipScoreB.total} of 40)` : 'not assigned'}</span></div>
+          <div className="kv"><span className="kv__k">Verdict</span><span className="kv__v">{verdict ? (verdict.winner === 'tie' ? 'dead even' : `Player ${verdict.winner}`) : 'not run yet'}</span></div>
+          <div className="bar">
+            {/* Settlement pays out the head-to-head verdict, so it requires one. */}
+            <button
+              className="btn btn--primary"
+              onClick={handleSettle}
+              disabled={!escrowId || !clipScoreA || !clipScoreB || !verdict || settled}
+            >
+              Settle match
+            </button>
           </div>
+          {settleResult && (
+            <details className="raw" open>
+              <summary>Raw settlement result</summary>
+              <pre className="json">{JSON.stringify(settleResult, null, 2)}</pre>
+            </details>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel__head">
+            <span className="panel__title">Log</span>
+            <span className="pill">local session</span>
+          </div>
+          <div className="log">
+            {log.map((entry, i) => <div key={i}>{entry}</div>)}
+          </div>
+        </section>
+        </>)}
+
+        {tab === 'predict' && (
+          <PredictTab address={address} modelInfo={modelInfo} />
         )}
-      </section>
-
-      <section style={{ marginBottom: 24 }}>
-        <strong>Match settlement</strong>
-        <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
-          Clip A: {clipScoreA ? `scored (${clipScoreA.total} of 40)` : 'not assigned'} ·
-          Clip B: {clipScoreB ? `scored (${clipScoreB.total} of 40)` : 'not assigned'} ·
-          Verdict: {verdict ? (verdict.winner === 'tie' ? 'dead even' : `Player ${verdict.winner}`) : 'not run yet'}
-        </p>
-        <div style={{ marginTop: 8 }}>
-          {/* Settlement pays out the head-to-head verdict, so it requires one. */}
-          <button
-            onClick={handleSettle}
-            disabled={!escrowId || !clipScoreA || !clipScoreB || !verdict || settled}
-          >
-            Settle match
-          </button>
-        </div>
-        {settleResult && (
-          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12 }}>
-            {JSON.stringify(settleResult, null, 2)}
-          </pre>
-        )}
-      </section>
-
-      <section>
-        <strong>Log</strong>
-        <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.6 }}>
-          {log.map((entry, i) => <div key={i}>{entry}</div>)}
-        </div>
-      </section>
-      </>)}
-
-      {tab === 'predict' && (
-        <PredictTab address={address} modelInfo={modelInfo} />
-      )}
+      </div>
     </div>
   )
 }
@@ -740,6 +716,10 @@ function PlayerPicker ({ label, scorers, selected, onSelect, exclude, disabled }
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
   const wrapRef = useRef(null)
+
+  // Which wager side this picker dresses as — purely visual, derived from the
+  // label so the component's props stay exactly as they were.
+  const side = label.toLowerCase().includes('person a') ? 'a' : 'b'
 
   // Close the dropdown when clicking outside.
   useEffect(() => {
@@ -760,25 +740,14 @@ function PlayerPicker ({ label, scorers, selected, onSelect, exclude, disabled }
 
   if (selected) {
     return (
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 12, color: '#8a8f98', marginBottom: 4 }}>{label}</div>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '8px 12px', background: '#16241a', border: '1px solid #2ecc71',
-          borderRadius: 6,
-        }}>
-          <span style={{ fontWeight: 'bold' }}>{selected.name}</span>
-          <span style={{ color: '#8a8f98' }}>· {selected.team}</span>
-          <span style={{ color: '#5dade2', fontSize: 12 }}>{selected.goals} goal{selected.goals !== 1 ? 's' : ''}</span>
+      <div className="picker">
+        <span className={`field__label ${side === 'a' ? 'side-a' : 'side-b'}`}>{label}</span>
+        <div className={`picker__chip picker__chip--${side}`}>
+          <span className="picker__name">{selected.name}</span>
+          <span className="picker__team">· {selected.team}</span>
+          <span className="picker__goals">{selected.goals} goal{selected.goals !== 1 ? 's' : ''}</span>
           {!disabled && (
-            <button
-              onClick={() => onSelect(null)}
-              style={{
-                marginLeft: 'auto', padding: '2px 10px', fontSize: 11,
-                background: 'transparent', color: '#c0392b', border: '1px solid #c0392b',
-                borderRadius: 4, cursor: 'pointer',
-              }}
-            >
+            <button className="btn btn--sm btn--ghost picker__change" onClick={() => onSelect(null)}>
               Change
             </button>
           )}
@@ -788,52 +757,34 @@ function PlayerPicker ({ label, scorers, selected, onSelect, exclude, disabled }
   }
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative', marginBottom: 10 }}>
-      <div style={{ fontSize: 12, color: '#8a8f98', marginBottom: 4 }}>{label}</div>
+    <div ref={wrapRef} className="picker">
+      <span className={`field__label ${side === 'a' ? 'side-a' : 'side-b'}`}>{label}</span>
       <input
         type="text"
+        className="input"
         placeholder="Search by player name or team…"
         value={search}
         onChange={(e) => { setSearch(e.target.value); setOpen(true) }}
         onFocus={() => setOpen(true)}
         disabled={disabled}
-        style={{
-          width: '100%', maxWidth: 420, fontFamily: 'monospace', fontSize: 12,
-          padding: '8px 12px', background: '#1a1d23', color: '#f2f3f5',
-          border: '1px solid #444', borderRadius: 6, boxSizing: 'border-box',
-        }}
       />
       {open && filtered.length > 0 && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, maxWidth: 420,
-          maxHeight: 220, overflowY: 'auto', background: '#1a1d23',
-          border: '1px solid #444', borderRadius: '0 0 6px 6px', zIndex: 100,
-        }}>
+        <div className="dd">
           {filtered.slice(0, 50).map((p) => (
             <div
               key={`${p.name}|${p.team}`}
+              className="dd__item"
               onClick={() => { onSelect(p); setSearch(''); setOpen(false) }}
-              style={{
-                padding: '8px 12px', cursor: 'pointer', fontSize: 12,
-                borderBottom: '1px solid #2a2d33',
-                transition: 'background 0.1s',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = '#252830' }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
             >
-              <span style={{ fontWeight: 'bold' }}>{p.name}</span>
-              <span style={{ color: '#8a8f98' }}> · {p.team}</span>
-              <span style={{ color: '#5dade2', marginLeft: 8 }}>{p.goals} goal{p.goals !== 1 ? 's' : ''}</span>
+              <b>{p.name}</b>
+              <span className="dd__team"> · {p.team}</span>
+              <span className="dd__goals">{p.goals} goal{p.goals !== 1 ? 's' : ''}</span>
             </div>
           ))}
         </div>
       )}
       {open && filtered.length === 0 && search && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, maxWidth: 420,
-          padding: '10px 12px', background: '#1a1d23', border: '1px solid #444',
-          borderRadius: '0 0 6px 6px', fontSize: 12, color: '#8a8f98', zIndex: 100,
-        }}>
+        <div className="dd dd__empty">
           No players match "{search}"
         </div>
       )}
@@ -847,29 +798,23 @@ function OddsBar ({ oddsResult }) {
   const pctA = playerA.percent
   const pctB = playerB.percent
   return (
-    <div style={{ margin: '16px 0', padding: 16, background: '#1a1d23', borderRadius: 6, border: '1px solid #333' }}>
-      <div style={{ fontSize: 12, color: '#8a8f98', marginBottom: 10 }}>
+    <div className="odds">
+      <div className="odds__label">
         Pre-match odds based on tournament stats — not a guarantee, does not affect payout
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 'bold', minWidth: 40, textAlign: 'right' }}>{pctA}%</span>
-        <div style={{ flex: 1, height: 18, borderRadius: 9, overflow: 'hidden', display: 'flex', background: '#333' }}>
-          <div style={{
-            width: `${pctA}%`, background: 'linear-gradient(90deg, #2ecc71, #27ae60)',
-            transition: 'width 0.3s ease',
-          }} />
-          <div style={{
-            width: `${pctB}%`, background: 'linear-gradient(90deg, #e67e22, #d35400)',
-            transition: 'width 0.3s ease',
-          }} />
+      <div className="odds__meterrow">
+        <span className="odds__pct odds__pct--a">{pctA}%</span>
+        <div className="odds__meter">
+          <div className="odds__fill-a" style={{ width: `${pctA}%` }} />
+          <div className="odds__fill-b" style={{ width: `${pctB}%` }} />
         </div>
-        <span style={{ fontSize: 13, fontWeight: 'bold', minWidth: 40 }}>{pctB}%</span>
+        <span className="odds__pct odds__pct--b">{pctB}%</span>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-        <span style={{ color: '#2ecc71' }}>{playerA.player} · {playerA.goals} goals</span>
-        <span style={{ color: '#e67e22' }}>{playerB.player} · {playerB.goals} goals</span>
+      <div className="odds__ends">
+        <span className="side-a">{playerA.player} · {playerA.goals} goals</span>
+        <span className="side-b">{playerB.player} · {playerB.goals} goals</span>
       </div>
-      <div style={{ fontSize: 11, color: '#666', marginTop: 8 }}>{note}</div>
+      <div className="odds__note">{note}</div>
     </div>
   )
 }
@@ -1077,9 +1022,9 @@ function PredictTab ({ address }) {
   return (
     <div>
       {/* --- Player selection --- */}
-      <section style={{ marginBottom: 24 }}>
-        <strong>Pick your players</strong>
-        <p style={{ margin: '4px 0 12px', fontSize: 12, color: '#8a8f98' }}>
+      <section className="panel">
+        <div className="panel__head"><span className="panel__title">Pick your players</span></div>
+        <p className="hint">
           Each side picks a different World Cup player who has scored at least one goal.
           {scorersLoading && ' Loading roster…'}
         </p>
@@ -1103,58 +1048,43 @@ function PredictTab ({ address }) {
       </section>
 
       {/* --- Staking --- */}
-      <section style={{ marginBottom: 24 }}>
-        <strong>Stake and wallets</strong>
-        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label style={{ fontSize: 12 }}>
-            Person A wallet address
-            <input
-              type="text" placeholder="0x…" value={addrA}
-              onChange={(e) => setAddrA(e.target.value.trim())}
-              disabled={!!activeBet}
-              style={{
-                display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12,
-                padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5',
-                border: `1px solid ${addrA && !isValidAddress(addrA) ? '#c0392b' : '#444'}`,
-                borderRadius: 4, width: 420,
-              }}
-            />
-          </label>
-          <label style={{ fontSize: 12 }}>
-            Person B wallet address
-            <input
-              type="text" placeholder="0x…" value={addrB}
-              onChange={(e) => setAddrB(e.target.value.trim())}
-              disabled={!!activeBet}
-              style={{
-                display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12,
-                padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5',
-                border: `1px solid ${addrB && !isValidAddress(addrB) ? '#c0392b' : '#444'}`,
-                borderRadius: 4, width: 420,
-              }}
-            />
-          </label>
-          <label style={{ fontSize: 12 }}>
-            Stake per person (USDt)
-            <input
-              type="number" min="1" step="any" value={stake}
-              onChange={(e) => setStake(e.target.value)}
-              disabled={!!activeBet}
-              style={{
-                display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12,
-                padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5',
-                border: '1px solid #444', borderRadius: 4, width: 140,
-              }}
-            />
-          </label>
-          {stake && parseFloat(stake) > 0 && (
-            <p style={{ margin: '4px 0', fontSize: 12, color: '#8a8f98' }}>
-              Total pot: {(parseFloat(stake) * 2).toFixed(2)} USDt ({stake} per person)
-            </p>
-          )}
-        </div>
-        <div style={{ marginTop: 12 }}>
+      <section className="panel">
+        <div className="panel__head"><span className="panel__title">Stake and wallets</span></div>
+        <label className="field">
+          <span className="field__label side-a">Person A wallet address</span>
+          <input
+            type="text" placeholder="0x…" value={addrA}
+            onChange={(e) => setAddrA(e.target.value.trim())}
+            disabled={!!activeBet}
+            className={`input ${addrA && !isValidAddress(addrA) ? 'input--err' : ''}`}
+          />
+        </label>
+        <label className="field">
+          <span className="field__label side-b">Person B wallet address</span>
+          <input
+            type="text" placeholder="0x…" value={addrB}
+            onChange={(e) => setAddrB(e.target.value.trim())}
+            disabled={!!activeBet}
+            className={`input ${addrB && !isValidAddress(addrB) ? 'input--err' : ''}`}
+          />
+        </label>
+        <label className="field">
+          <span className="field__label">Stake per person (USDt)</span>
+          <input
+            type="number" min="1" step="any" value={stake}
+            onChange={(e) => setStake(e.target.value)}
+            disabled={!!activeBet}
+            className="input input--short"
+          />
+        </label>
+        {stake && parseFloat(stake) > 0 && (
+          <p className="micro" style={{ margin: '2px 0 0' }}>
+            Total pot: {(parseFloat(stake) * 2).toFixed(2)} USDt ({stake} per person)
+          </p>
+        )}
+        <div className="bar">
           <button
+            className="btn btn--primary"
             onClick={handleCreateBet}
             disabled={!!activeBet || !pickA || !pickB || !isValidAddress(addrA) || !isValidAddress(addrB) || creating}
           >
@@ -1162,8 +1092,8 @@ function PredictTab ({ address }) {
           </button>
           {activeBet && (
             <button
+              className="btn btn--ghost"
               onClick={() => { setActiveBet(null); setSettleResult(null); setPClipScore(null); setPVideoPath(null) }}
-              style={{ marginLeft: 8 }}
             >
               New bet
             </button>
@@ -1172,19 +1102,13 @@ function PredictTab ({ address }) {
       </section>
 
       {/* --- Saved bets list --- */}
-      <section style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <strong>Saved bets</strong>
+      <section className="panel">
+        <div className="panel__head">
+          <span className="panel__title">Saved bets</span>
           {betList.length > 0 && (
             <button
+              className={`btn btn--sm ${betDeleteMode ? 'btn--warn' : 'btn--ghost'}`}
               onClick={() => { setBetDeleteMode((p) => !p); setBetDeleteSelected(new Set()) }}
-              style={{
-                fontSize: 11, padding: '3px 10px',
-                background: betDeleteMode ? '#2a1c0e' : 'transparent',
-                color: betDeleteMode ? '#e67e22' : '#8a8f98',
-                border: `1px solid ${betDeleteMode ? '#e67e22' : '#444'}`,
-                borderRadius: 4, cursor: 'pointer',
-              }}
             >
               {betDeleteMode ? 'Cancel' : 'Delete'}
             </button>
@@ -1192,17 +1116,11 @@ function PredictTab ({ address }) {
         </div>
 
         {betDeleteMode && (
-          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="bar" style={{ marginTop: 0, marginBottom: 8 }}>
             <button
+              className="btn btn--sm btn--danger"
               onClick={handleDeleteBets}
               disabled={betDeleteSelected.size === 0}
-              style={{
-                fontSize: 12, padding: '4px 14px',
-                background: betDeleteSelected.size > 0 ? '#3d1515' : '#1a1d23',
-                color: betDeleteSelected.size > 0 ? '#e74c3c' : '#555',
-                border: `1px solid ${betDeleteSelected.size > 0 ? '#e74c3c' : '#333'}`,
-                borderRadius: 4, cursor: betDeleteSelected.size > 0 ? 'pointer' : 'default',
-              }}
             >
               Delete {betDeleteSelected.size > 0 ? `(${betDeleteSelected.size})` : ''}
             </button>
@@ -1210,9 +1128,9 @@ function PredictTab ({ address }) {
         )}
 
         {betList.length === 0 ? (
-          <p style={{ margin: '8px 0 0', fontSize: 12 }}>(no bets yet)</p>
+          <p className="micro" style={{ margin: 0 }}>(no bets yet)</p>
         ) : (
-          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div className="stack" style={{ marginTop: 0 }}>
             {betList.map((bet) => {
               const isLoaded = activeBet?.id === bet.id
               const isChecked = betDeleteSelected.has(bet.id)
@@ -1230,41 +1148,22 @@ function PredictTab ({ address }) {
                       loadBet(bet.id)
                     }
                   }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    fontFamily: 'monospace', fontSize: 12, padding: '8px 10px',
-                    background: isChecked ? '#2a1515' : isLoaded ? '#16241a' : '#1a1d23',
-                    color: '#f2f3f5',
-                    border: `1px solid ${isChecked ? '#e74c3c' : isLoaded ? '#2ecc71' : '#444'}`,
-                    borderRadius: 4, cursor: 'pointer', userSelect: 'none',
-                  }}
+                  className={`row ${isChecked ? 'row--checked' : isLoaded ? 'row--loaded' : ''}`}
                 >
                   {betDeleteMode && (
-                    <div style={{
-                      width: 14, height: 14, borderRadius: 3,
-                      border: `1.5px solid ${isChecked ? '#e74c3c' : '#666'}`,
-                      background: isChecked ? '#e74c3c' : 'transparent',
-                      flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}>
-                      {isChecked && <span style={{ color: '#fff', fontSize: 10, lineHeight: 1 }}>✓</span>}
+                    <div className={`checkbox ${isChecked ? 'checkbox--on' : ''}`}>
+                      {isChecked && <span className="checkbox__tick">✓</span>}
                     </div>
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <strong>{bet.id.slice(0, 8)}…</strong>
-                      {' · '}
-                      <span style={{ color: '#2ecc71' }}>{bet.playerAChoice?.name}</span>
-                      {' vs '}
-                      <span style={{ color: '#e67e22' }}>{bet.playerBChoice?.name}</span>
-                      {' · '}
-                      <span style={{
-                        color: bet.status === 'settled' ? '#2ecc71'
-                          : bet.status === 'forfeited' ? '#e67e22'
-                          : bet.status === 'unresolved' ? '#c0392b'
-                          : '#8a8f98'
-                      }}>{bet.status}</span>
+                      <span className="side-a">{bet.playerAChoice?.name}</span>
+                      <span style={{ color: 'var(--txt3)' }}>vs</span>
+                      <span className="side-b">{bet.playerBChoice?.name}</span>
+                      <span className={statusPillClass(bet.status)}>{bet.status}</span>
                     </div>
-                    <div style={{ color: '#8a8f98', marginTop: 2 }}>
+                    <div className="row__meta">
                       {bet.stakeAmount} USDt/side · wallet: {bet.matchWalletAddress}
                     </div>
                   </div>
@@ -1277,81 +1176,83 @@ function PredictTab ({ address }) {
 
       {/* --- Active bet details --- */}
       {activeBet && (
-        <section style={{ marginBottom: 24 }}>
-          <strong>Active bet</strong>
-          <div style={{ marginTop: 8, padding: 14, background: '#1a1d23', borderRadius: 6, border: '1px solid #333' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <div>
-                <span style={{ color: '#2ecc71', fontWeight: 'bold' }}>{activeBet.playerAChoice?.name}</span>
-                <span style={{ color: '#8a8f98' }}> ({activeBet.playerAChoice?.team})</span>
-                <span style={{ color: '#8a8f98' }}> vs </span>
-                <span style={{ color: '#e67e22', fontWeight: 'bold' }}>{activeBet.playerBChoice?.name}</span>
-                <span style={{ color: '#8a8f98' }}> ({activeBet.playerBChoice?.team})</span>
-              </div>
-              <button onClick={handleRefreshBet} style={{ fontSize: 11, padding: '3px 10px' }}>
-                Refresh
-              </button>
-            </div>
-
-            <div style={{ fontSize: 12, color: '#c8ccd2' }}>
-              <div>Status: <strong style={{
-                color: activeBet.status === 'settled' ? '#2ecc71'
-                  : activeBet.status === 'forfeited' ? '#e67e22'
-                  : activeBet.status === 'unresolved' ? '#c0392b'
-                  : '#f2f3f5'
-              }}>{activeBet.status}</strong></div>
-              <div>Escrow balance: {activeBet.escrowBalance ?? '(refresh to check)'} USDt</div>
-              <div>Stake: {activeBet.stakeAmount} USDt per side · Total pot: {activeBet.stakeAmount * 2} USDt</div>
-              <div>Match wallet: <span style={{ color: '#5dade2' }}>{activeBet.matchWalletAddress}</span></div>
-              {activeBet.txHash && (
-                <div style={{ marginTop: 4 }}>
-                  Payout tx:{' '}
-                  <a
-                    href={`https://sepolia.etherscan.io/tx/${activeBet.txHash}`}
-                    target="_blank" rel="noopener noreferrer"
-                    style={{ color: '#5dade2', wordBreak: 'break-all' }}
-                  >
-                    {activeBet.txHash}
-                  </a>
-                </div>
-              )}
-            </div>
-
-            {activeBet.odds && !betSettled && !betUnresolved && (
-              <OddsBar oddsResult={activeBet.odds} />
-            )}
+        <section className="panel">
+          <div className="panel__head">
+            <span className="panel__title">Active bet</span>
+            <button className="btn btn--sm btn--ghost" onClick={handleRefreshBet}>
+              Refresh
+            </button>
           </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10, fontFamily: 'var(--mono)', fontSize: 13 }}>
+            <span className="side-a" style={{ fontWeight: 700 }}>{activeBet.playerAChoice?.name}</span>
+            <span className="micro">({activeBet.playerAChoice?.team})</span>
+            <span className="micro">vs</span>
+            <span className="side-b" style={{ fontWeight: 700 }}>{activeBet.playerBChoice?.name}</span>
+            <span className="micro">({activeBet.playerBChoice?.team})</span>
+            <span className={statusPillClass(activeBet.status)}>{activeBet.status}</span>
+          </div>
+
+          <div className="kv"><span className="kv__k">Escrow balance</span><span className="kv__v">{activeBet.escrowBalance ?? '(refresh to check)'} USDt</span></div>
+          <div className="kv"><span className="kv__k">Stake</span><span className="kv__v">{activeBet.stakeAmount} USDt per side · total pot {activeBet.stakeAmount * 2} USDt</span></div>
+          <div className="kv"><span className="kv__k">Match wallet</span><span className="kv__v">{activeBet.matchWalletAddress}</span></div>
+          {activeBet.txHash && (
+            <div className="kv"><span className="kv__k">Payout tx</span><span className="kv__v">
+              <a
+                className="hashlink"
+                href={`https://sepolia.etherscan.io/tx/${activeBet.txHash}`}
+                target="_blank" rel="noopener noreferrer"
+              >
+                {activeBet.txHash}
+              </a>
+            </span></div>
+          )}
+
+          {activeBet.odds && !betSettled && !betUnresolved && (
+            <OddsBar oddsResult={activeBet.odds} />
+          )}
 
           {/* --- Settled / forfeited / unresolved banner --- */}
           {betSettled && (
-            <div style={{
-              margin: '12px 0', padding: 14, borderRadius: 6,
-              background: activeBet.status === 'forfeited' ? '#2a1c0e' : '#0e2418',
-              border: `1px solid ${activeBet.status === 'forfeited' ? '#e67e22' : '#2ecc71'}`,
-            }}>
-              <div style={{
-                fontWeight: 'bold', letterSpacing: 1, marginBottom: 6,
-                color: activeBet.status === 'forfeited' ? '#e67e22' : '#2ecc71',
-              }}>
+            <div className={`receipt ${activeBet.status === 'forfeited' ? 'receipt--warn' : ''}`}>
+              <div className="receipt__status">
+                <span className="dot dot--pulse" />
                 {activeBet.status === 'forfeited'
-                  ? `● FORFEITED — PERSON ${activeBet.winner} WINS`
-                  : `● SETTLED — PERSON ${activeBet.winner} WINS`}
+                  ? `Forfeited — person ${activeBet.winner} wins`
+                  : `Settled — person ${activeBet.winner} wins`}
               </div>
-              <div style={{ fontSize: 12 }}>
-                Winner: {activeBet.winner === 'A' ? activeBet.playerAChoice?.name : activeBet.playerBChoice?.name}
-              </div>
+              <hr className="receipt__divider" />
+              <div className="kv"><span className="kv__k">Winner</span><span className="kv__v">
+                {activeBet.winner === 'A' ? activeBet.playerAChoice?.name : activeBet.playerBChoice?.name}
+              </span></div>
+              {activeBet.txHash && (
+                <>
+                  <div className="kv"><span className="kv__k">Payout tx</span><span className="kv__v">
+                    <a
+                      className="hashlink"
+                      href={`https://sepolia.etherscan.io/tx/${activeBet.txHash}`}
+                      target="_blank" rel="noopener noreferrer"
+                    >
+                      {activeBet.txHash}
+                    </a>
+                  </span></div>
+                  <a
+                    className="receipt__link"
+                    href={`https://sepolia.etherscan.io/tx/${activeBet.txHash}`}
+                    target="_blank" rel="noopener noreferrer"
+                  >
+                    View on Sepolia Etherscan ↗
+                  </a>
+                </>
+              )}
             </div>
           )}
 
           {betUnresolved && (
-            <div style={{
-              margin: '12px 0', padding: 14, borderRadius: 6,
-              background: '#2a1515', border: '1px solid #c0392b',
-            }}>
-              <div style={{ fontWeight: 'bold', letterSpacing: 1, color: '#c0392b', marginBottom: 6 }}>
-                ● UNRESOLVED
-              </div>
-              <div style={{ fontSize: 12 }}>
+            <div className="receipt receipt--bad">
+              <div className="receipt__status"><span className="dot" /> Unresolved</div>
+              <hr className="receipt__divider" />
+              <div style={{ fontFamily: 'var(--sans)', fontSize: 12, color: 'var(--txt2)' }}>
                 No refund path exists. This bet cannot be settled with the current clips.
               </div>
             </div>
@@ -1360,81 +1261,76 @@ function PredictTab ({ address }) {
           {/* --- Clip submission --- */}
           {!betSettled && !betUnresolved && (
             <div style={{ marginTop: 16 }}>
-              <strong>Submit goal clips</strong>
-              <p style={{ margin: '4px 0 12px', fontSize: 12, color: '#8a8f98' }}>
+              <div className="panel__title">Submit goal clips</div>
+              <p className="hint" style={{ margin: '4px 0 12px' }}>
                 Each side submits a real goal clip for their chosen player. Same scoring pipeline as Judge mode.
               </p>
 
-              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                 {/* Side A clip */}
-                <div style={{
-                  flex: '1 1 200px', padding: 12, background: '#1a1d23',
-                  borderRadius: 6, border: `1px solid ${activeBet.clipA ? '#2ecc71' : '#333'}`,
-                }}>
-                  <div style={{ fontSize: 12, fontWeight: 'bold', color: '#2ecc71', marginBottom: 6 }}>
+                <div className={`clipcard ${activeBet.clipA ? 'clipcard--a' : ''}`}>
+                  <div className="clipcard__who side-a">
                     Person A — {activeBet.playerAChoice?.name}
                   </div>
                   {activeBet.clipA ? (
-                    <div style={{ fontSize: 12 }}>
-                      ✓ Clip submitted · Total: <strong>{activeBet.clipA.total}/40</strong>
+                    <div className="clipcard__body">
+                      ✓ Clip submitted · Total: <b>{activeBet.clipA.total}/40</b>
                     </div>
                   ) : (
-                    <div style={{ fontSize: 12, color: '#8a8f98' }}>No clip submitted yet</div>
+                    <div className="clipcard__body">No clip submitted yet</div>
                   )}
                 </div>
 
                 {/* Side B clip */}
-                <div style={{
-                  flex: '1 1 200px', padding: 12, background: '#1a1d23',
-                  borderRadius: 6, border: `1px solid ${activeBet.clipB ? '#e67e22' : '#333'}`,
-                }}>
-                  <div style={{ fontSize: 12, fontWeight: 'bold', color: '#e67e22', marginBottom: 6 }}>
+                <div className={`clipcard ${activeBet.clipB ? 'clipcard--b' : ''}`}>
+                  <div className="clipcard__who side-b">
                     Person B — {activeBet.playerBChoice?.name}
                   </div>
                   {activeBet.clipB ? (
-                    <div style={{ fontSize: 12 }}>
-                      ✓ Clip submitted · Total: <strong>{activeBet.clipB.total}/40</strong>
+                    <div className="clipcard__body">
+                      ✓ Clip submitted · Total: <b>{activeBet.clipB.total}/40</b>
                     </div>
                   ) : (
-                    <div style={{ fontSize: 12, color: '#8a8f98' }}>No clip submitted yet</div>
+                    <div className="clipcard__body">No clip submitted yet</div>
                   )}
                 </div>
               </div>
 
               {/* Clip picker and scorer */}
-              <div style={{ marginTop: 12, padding: 12, background: '#151820', borderRadius: 6, border: '1px solid #2a2d33' }}>
-                <div style={{ fontSize: 12, color: '#8a8f98', marginBottom: 8 }}>
+              <div className="card" style={{ marginTop: 12 }}>
+                <div className="micro" style={{ marginBottom: 8 }}>
                   Pick and score a goal clip, then assign it to a side
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <button onClick={handlePickClip} disabled={pScoring}>Pick video file</button>
-                  <button onClick={handleScoreClip} disabled={!pVideoPath || pScoring}>
+                <div className="bar" style={{ marginTop: 0 }}>
+                  <button className="btn" onClick={handlePickClip} disabled={pScoring}>Pick video file</button>
+                  <button className="btn btn--primary" onClick={handleScoreClip} disabled={!pVideoPath || pScoring}>
                     {pScoring ? (pPreparingModel ? 'Preparing model…' : 'Scoring…') : 'Score clip'}
                   </button>
                   {pVideoPath && (
-                    <span style={{ fontSize: 11, color: '#8a8f98' }}>
+                    <span className="filename">
                       {pVideoPath.split(/[\\/]/).pop()}
                     </span>
                   )}
                 </div>
                 {pClipScore && (
                   <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 12, marginBottom: 8 }}>
-                      Score: <strong>{pClipScore.total}/40</strong> · {pClipScore.frameCount} frames
-                      {pClipScore.mock ? ' · MOCK' : ''}
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+                      <span className="score-big">{pClipScore.total} <small>/ 40</small></span>
+                      <span className="micro">{pClipScore.frameCount} frames</span>
+                      {pClipScore.mock && <span className="pill pill--warn">mock</span>}
                     </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div className="bar" style={{ marginTop: 0 }}>
                       <button
+                        className="btn btn--a"
                         onClick={() => handleSubmitClip('A')}
                         disabled={!!activeBet.clipA}
-                        style={{ background: activeBet.clipA ? undefined : '#0e2418', borderColor: '#2ecc71' }}
                       >
                         Submit for {activeBet.playerAChoice?.name} (A)
                       </button>
                       <button
+                        className="btn btn--b"
                         onClick={() => handleSubmitClip('B')}
                         disabled={!!activeBet.clipB}
-                        style={{ background: activeBet.clipB ? undefined : '#2a1c0e', borderColor: '#e67e22' }}
                       >
                         Submit for {activeBet.playerBChoice?.name} (B)
                       </button>
@@ -1448,29 +1344,25 @@ function PredictTab ({ address }) {
           {/* --- Settlement controls --- */}
           {!betSettled && !betUnresolved && (
             <div style={{ marginTop: 16 }}>
-              <strong>Settle</strong>
-              <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div className="panel__title">Settle</div>
+              <div className="bar">
                 {bothClips && (
-                  <button onClick={handleSettle} disabled={settling}>
+                  <button className="btn btn--primary" onClick={handleSettle} disabled={settling}>
                     {settling ? 'Settling…' : 'Settle bet — compare clips'}
                   </button>
                 )}
                 {oneClip && (
-                  <button onClick={handleForfeit} disabled={settling}
-                    style={{ background: '#2a1c0e', borderColor: '#e67e22' }}
-                  >
+                  <button className="btn btn--warn" onClick={handleForfeit} disabled={settling}>
                     {settling ? 'Processing…' : 'Forfeit — one side has no clip'}
                   </button>
                 )}
                 {noClips && (
-                  <button onClick={handleMarkUnresolved} disabled={settling}
-                    style={{ background: '#2a1515', borderColor: '#c0392b' }}
-                  >
+                  <button className="btn btn--danger" onClick={handleMarkUnresolved} disabled={settling}>
                     Mark unresolved — neither player scored
                   </button>
                 )}
               </div>
-              <p style={{ margin: '6px 0 0', fontSize: 11, color: '#666' }}>
+              <p className="micro" style={{ margin: '8px 0 0' }}>
                 {bothClips && 'Both clips are in. Settling runs them through the same AI comparison Judge mode uses.'}
                 {oneClip && 'Only one side submitted a clip. Forfeiting releases the full pot to that side, no comparison needed.'}
                 {noClips && 'Neither side submitted a clip. No refund path exists — the bet will be marked as unresolved.'}
@@ -1480,27 +1372,24 @@ function PredictTab ({ address }) {
 
           {/* --- Settlement result --- */}
           {settleResult && (
-            <div style={{ marginTop: 12 }}>
-              <strong>Settlement result</strong>
-              <pre style={{
-                margin: '8px 0', padding: 12, background: '#1a1d23',
-                borderRadius: 4, fontSize: 12, overflowX: 'auto',
-              }}>
-                {JSON.stringify(settleResult, null, 2)}
-              </pre>
-            </div>
+            <details className="raw" open>
+              <summary>Raw settlement result</summary>
+              <pre className="json">{JSON.stringify(settleResult, null, 2)}</pre>
+            </details>
           )}
         </section>
       )}
 
       {/* --- Log --- */}
-      <section>
-        <strong>Log</strong>
-        <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.6 }}>
+      <section className="panel">
+        <div className="panel__head">
+          <span className="panel__title">Log</span>
+          <span className="pill">local session</span>
+        </div>
+        <div className="log">
           {pLog.map((entry, i) => <div key={i}>{entry}</div>)}
         </div>
       </section>
     </div>
   )
 }
-

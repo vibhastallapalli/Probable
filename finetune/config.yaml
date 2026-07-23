@@ -1,0 +1,37 @@
+# Fine-tune configuration for the Probable judge.
+# Match `base_model` to the Qwen3-VL build you actually serve through QVAC.
+
+base_model: Qwen/Qwen3-VL-2B-Instruct   # HF repo id of the base VLM
+output_dir: finetune/out                # where the LoRA adapter is written
+
+# Frame sampling — keep in step with the runtime judge (8 frames/clip, temp 0).
+frames_per_clip: 8
+
+# LoRA / PEFT
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+# Attention + MLP projections; adjust to the module names Qwen3-VL exposes.
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+
+# Optimization
+epochs: 3
+learning_rate: 1.0e-4
+batch_size: 1
+grad_accum: 8
+max_seq_len: 2048
+warmup_ratio: 0.03
+load_in_4bit: true       # QLoRA; set false if you have the VRAM for bf16
+seed: 42
+
+# Data (produced by prepare_dataset.py)
+train_file: finetune/data/train.jsonl
+val_file: finetune/data/val.jsonl
+val_fraction: 0.2

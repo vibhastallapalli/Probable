@@ -1,0 +1,7 @@
+# Example evaluation manifest — one JSON object per line (JSONL).
+# Copy this to eval/pairs.jsonl, point the paths at your own clips, and set
+# "human" to the winner YOU judged for each pair: "A", "B", or "tie".
+# Lines starting with # and blank lines are ignored.
+{"id": "pair-01", "clipA": "clips/playerA_1.mp4", "clipB": "clips/playerB_1.mp4", "human": "B"}
+{"id": "pair-02", "clipA": "clips/playerA_2.mp4", "clipB": "clips/playerB_2.mp4", "human": "B"}
+{"id": "pair-03", "clipA": "clips/playerA_3.mp4", "clipB": "clips/playerB_3.mp4", "human": "A"}

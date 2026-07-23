@@ -9,3 +9,12 @@ Thumbs.db
 .vite/
 .obsidian/
 graphify-out/
+
+# eval + finetune artifacts
+eval/results/
+eval/pairs.jsonl
+finetune/data/
+finetune/out/
+finetune/clips/
+__pycache__/
+*.pyc

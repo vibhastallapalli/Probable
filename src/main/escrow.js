@@ -14,20 +14,25 @@ const USDT_DECIMALS = 6
 // Replaces the previous in-memory Map so records survive restarts.
 // ---------------------------------------------------------------------------
 
+// WHAT THIS DOES: Path to the JSON file holding every match record.
 function _escrowsFile () {
   return path.join(app.getPath('userData'), 'escrows.json')
 }
 
+// WHAT THIS DOES: Reads all match records off disk.
 function _readEscrowStore () {
   const file = _escrowsFile()
   if (!fs.existsSync(file)) return {}
   return JSON.parse(fs.readFileSync(file, 'utf8'))
 }
 
+// WHAT THIS DOES: Writes all match records back to disk.
 function _writeEscrowStore (store) {
   fs.writeFileSync(_escrowsFile(), JSON.stringify(store, null, 2), 'utf8')
 }
 
+// WHAT THIS DOES: Converts raw chain units into readable USDt (USDT has 6
+//   decimal places).
 function _toUsdt (baseUnits) {
   return Number(baseUnits) / Math.pow(10, USDT_DECIMALS)
 }
@@ -41,6 +46,8 @@ function _toUsdt (baseUnits) {
  * @param {number|string} stakeAmount - USDt stake per participant (human-readable)
  * @returns {Promise<object>} The created escrow record
  */
+// WHAT THIS DOES: Sets up a match: makes the throwaway wallet, saves the
+//   record, and returns the address both players must send USDt to.
 async function createEscrow (participant1, participant2, stakeAmount) {
   if (!participant1 || !participant2) throw new Error('Both participant addresses are required')
   if (participant1.toLowerCase() === participant2.toLowerCase()) throw new Error('Participants must be different addresses')
@@ -81,6 +88,8 @@ async function createEscrow (participant1, participant2, stakeAmount) {
  * @param {string} escrowId
  * @returns {Promise<object>}
  */
+// WHAT THIS DOES: Returns a saved match record plus its live on-chain
+//   balance.
 async function getEscrowStatus (escrowId) {
   const store = _readEscrowStore()
   const record = store[escrowId]
@@ -97,6 +106,8 @@ async function getEscrowStatus (escrowId) {
  * Does not touch any on-chain state — purely a local record removal.
  * @param {string[]} ids
  */
+// WHAT THIS DOES: Removes match records from local storage. Does nothing on
+//   chain — the money is unaffected.
 function deleteEscrows (ids) {
   const set = new Set(ids)
   const store = _readEscrowStore()
@@ -110,6 +121,8 @@ function deleteEscrows (ids) {
  * it. Balances are the last persisted values, not live on-chain reads.
  * @returns {object[]} All stored escrow records
  */
+// WHAT THIS DOES: Returns every saved match record, for the saved-matches
+//   list in the UI.
 function listEscrows () {
   const store = _readEscrowStore()
   return Object.values(store).map((record) => ({ ...record }))
@@ -125,6 +138,8 @@ function listEscrows () {
  * @param {string} winnerAddress - Must be one of the two participants
  * @returns {Promise<object>} Release summary with on-chain tx hash
  */
+// WHAT THIS DOES: Pays the winner and marks the match settled. Refuses to
+//   pay twice, and refuses to pay anyone who wasn't a participant.
 async function releaseEscrow (escrowId, winnerAddress) {
   const store = _readEscrowStore()
   const record = store[escrowId]

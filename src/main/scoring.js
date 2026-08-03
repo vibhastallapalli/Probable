@@ -176,6 +176,9 @@ not mention, and do not fill gaps with general football knowledge.`
 // same finishing spot instead of each re-guessing it from the description —
 // four independent guesses used to contradict each other and the placement
 // score.
+// WHAT THIS DOES: Builds the one sentence that tells the judge pass where
+//   the ball ended up, handed over as a settled fact so all three criteria
+//   agree on it.
 function placementFactLine (zone) {
   return `\n\nOne fact is already settled: the shot went ${PLACEMENT_ZONE_PHRASES[zone]}. ` +
     'Treat that as exactly where the ball ended up, even if the description ' +
@@ -225,6 +228,8 @@ ${GROUNDING_RULES}`
 // mixes up whose shot is whose, and the whole call runs twice with the
 // clip order swapped — only answers that mirror across the two runs count.
 // Distance is deliberately NOT asked here (see DISTANCE_PROMPT).
+// WHAT THIS DOES: Writes the head-to-head prompt, spelling out how many
+//   images belong to each player so the model never mixes the two shots up.
 function buildComparePrompt (countA, countB) {
   return `You are looking at still frames from TWO different short football (soccer)
 clips. Each clip shows one player taking one shot at a goal.
@@ -473,6 +478,7 @@ const MODEL_CTX_SIZE = Number(process.env.QVAC_CTX_SIZE) || 8192
  * @param {string} videoPath
  * @returns {Promise<number>}
  */
+// WHAT THIS DOES: Asks ffprobe how many seconds long a video is.
 async function getVideoDuration (videoPath) {
   const { stdout } = await execFileAsync(ffprobePath, [
     '-v', 'error',
@@ -493,6 +499,8 @@ async function getVideoDuration (videoPath) {
  *   when the clip is meaningfully under MIN_CLIP_FPS, and minFps echoing the
  *   threshold so the UI can show it without duplicating the constant.
  */
+// WHAT THIS DOES: Asks ffprobe for a clip's length and frame rate in one go,
+//   and flags anything under 30fps as risky.
 async function probeVideo (videoPath) {
   const { stdout } = await execFileAsync(ffprobePath, [
     '-v', 'error',
@@ -526,6 +534,8 @@ async function probeVideo (videoPath) {
 
 // ffprobe reports frame rates as fractions like "30000/1001". Returns the
 // rate as a plain number, or 0 when the field is missing or malformed.
+// WHAT THIS DOES: Turns ffprobe's fraction ("30000/1001") into a plain
+//   number (29.97).
 function parseFrameRate (value) {
   if (typeof value !== 'string' || value.length === 0) return 0
   const parts = value.split('/')
@@ -555,6 +565,8 @@ function parseFrameRate (value) {
  * @param {number} [opts.fpsCeiling] - Upper bound on sampling fps (fallback path).
  * @returns {Promise<string[]>} Ordered array of extracted frame image paths.
  */
+// WHAT THIS DOES: Turns a video into ~16 still PNG screenshots. THESE STILLS
+//   ARE THE ONLY THING THE MODEL EVER SEES.
 async function extractFrames (videoPath, opts = {}) {
   if (!videoPath || !fs.existsSync(videoPath)) {
     throw new Error(`Video file not found: ${videoPath}`)
@@ -617,6 +629,8 @@ async function extractFrames (videoPath, opts = {}) {
  * @param {number} count - Total number of timestamps wanted.
  * @returns {number[]} Ascending timestamps in seconds.
  */
+// WHAT THIS DOES: Decides WHICH moments to screenshot: one third spread over
+//   the first half, two thirds over the second half where the shot happens.
 function sampleTimestamps (duration, count) {
   // Stop shy of the very end — a seek at or past the final frame yields nothing.
   const end = Math.max(0, duration - Math.min(0.25, duration * 0.05))
@@ -673,6 +687,8 @@ const MODEL_INFO = {
 // into memory (and downloads it on first ever use), so we do it once and reuse.
 let _qvac = null
 
+// WHAT THIS DOES: Loads the vision model into memory. Tries Qwen3-VL 2B
+//   first, falls back to SmolVLM2 if it fails to load.
 async function getModel (onProgress) {
   if (_qvac) return _qvac
 
@@ -760,6 +776,8 @@ async function getModel (onProgress) {
  *   progress, forwarded so the UI can show it instead of a silent wait.
  * @returns {Promise<{ready: boolean, alreadyLoaded: boolean, model: string, mock?: boolean}>}
  */
+// WHAT THIS DOES: Downloads and loads the model BEFORE anyone hits score, so
+//   the one-time first-run download can't trip the worker's startup timeout.
 async function prepareModel (onProgress) {
   // Mock mode never touches the real model, so warm-up is a no-op.
   if (process.env.QVAC_MOCK_SCORING === '1') {
@@ -789,6 +807,8 @@ async function prepareModel (onProgress) {
  *   { scores: { skill:{score,explanation}, difficulty, aesthetic, placement },
  *     total, frameCount, duration, model, mock }
  */
+// WHAT THIS DOES: Runs the three passes on ONE clip (describe, then locate,
+//   then judge) and returns its scorecard out of 40.
 async function scoreClip (frames, metadata = {}) {
   if (!Array.isArray(frames) || frames.length === 0) {
     throw new Error('scoreClip requires a non-empty array of frame paths')
@@ -867,6 +887,8 @@ async function scoreClip (frames, metadata = {}) {
 // error would treat a silently-failed clear as a success — exactly how
 // context creeps across clips until one overflows. Check the flag and log a
 // real failure instead of assuming the cache is clean.
+// WHAT THIS DOES: Wipes the model's working memory. Without this the second
+//   clip inherits the first clip's context and crashes.
 async function clearCache (sdk) {
   try {
     const res = await sdk.deleteCache({ all: true })
@@ -883,6 +905,9 @@ async function clearCache (sdk) {
 // clearing it, the next call's prompt stacks on top of the previous context
 // and overflows the window. Clear after every call (success or failure) so
 // each pass and each clip starts from a clean slate.
+// WHAT THIS DOES: THE SINGLE DOORWAY TO THE MODEL. Every prompt in this app
+//   goes through here, at temperature 0, and the cache is wiped afterwards no
+//   matter what.
 async function runCompletion (sdk, modelId, { history, responseFormat }) {
   const run = sdk.completion({
     modelId,
@@ -933,6 +958,9 @@ async function runCompletion (sdk, modelId, { history, responseFormat }) {
  * @param {string[]} frames - All extracted frame paths, in clip order.
  * @returns {Promise<{row: string, column: string, explanation: string, sideUnverified: boolean}>}
  */
+// WHAT THIS DOES: Works out which cell of the goal the ball hit: polls the
+//   last few frames one at a time, votes, then mirror-checks any left/right
+//   call.
 async function classifyPlacement (sdk, modelId, frames) {
   const tail = frames.slice(-PLACEMENT_FRAME_COUNT)
 
@@ -975,6 +1003,8 @@ async function classifyPlacement (sdk, modelId, frames) {
 }
 
 // One single-frame placement question, grammar-locked to the row/column enums.
+// WHAT THIS DOES: Asks the model about ONE frame: which row and column of
+//   the goal is the ball in?
 function askPlacement (sdk, modelId, framePath) {
   return runCompletion(sdk, modelId, {
     history: [{
@@ -991,6 +1021,8 @@ function askPlacement (sdk, modelId, framePath) {
 
 // Majority vote counting only the allowed (clear) values; ties resolve to the
 // value backed by the latest frame. 'unclear' when no frame answered clearly.
+// WHAT THIS DOES: Counts votes and returns the most common answer. Ties go
+//   to the latest frame, where the ball is deepest into the goal.
 function majority (values, allowed) {
   const counts = new Map()
   for (const v of values) {
@@ -1009,6 +1041,8 @@ function majority (values, allowed) {
 
 // Horizontally mirrored copy of a frame for the chirality check, written next
 // to the source frame so it lives and dies with the extraction directory.
+// WHAT THIS DOES: Makes a horizontally mirrored copy of a frame, used for
+//   the left/right sanity check.
 async function flipFrame (framePath) {
   const out = framePath.replace(/\.png$/i, '.mirror.png')
   if (!fs.existsSync(out)) {
@@ -1033,6 +1067,8 @@ async function flipFrame (framePath) {
  * @param {object} clipB - scoreClip() result for clip B.
  * @returns {object} { winner: 'A'|'B'|'tie', margin, totalA, totalB, breakdown }
  */
+// WHAT THIS DOES: Compares two clips by their /40 totals. NOT the match
+//   decider — this is only the third tiebreak.
 function compareClips (clipA, clipB) {
   const totalA = clipA.total ?? sumScores(clipA.scores)
   const totalB = clipB.total ?? sumScores(clipB.scores)
@@ -1113,6 +1149,8 @@ const DIMENSION_WIN_PHRASES = {
  * Settlement uses this to fall back to the totals comparison for legacy
  * scores instead of failing the match.
  */
+// WHAT THIS DOES: Checks both clips still have their frame files on disk
+//   before trying to compare them.
 function canCompareHeadToHead (clipA, clipB) {
   return [clipA, clipB].every((clip) =>
     Array.isArray(clip?.frames) &&
@@ -1136,6 +1174,8 @@ function canCompareHeadToHead (clipA, clipB) {
  * @param {number} [count] - How many frames to keep.
  * @returns {string[]} Ordered subset of frames.
  */
+// WHAT THIS DOES: Picks the 7 most useful frames from a clip for the
+//   head-to-head call, skipping the pointless run-up at the start.
 function selectComparisonFrames (frames, count = COMPARE_FRAME_COUNT) {
   if (frames.length <= count) return [...frames]
   const start = Math.floor(frames.length / 4)
@@ -1180,6 +1220,9 @@ function selectComparisonFrames (frames, count = COMPARE_FRAME_COUNT) {
  *     spectacle: {pick, reason}, tiebreak: null|'spectacle'|'totals',
  *     totals: {a, b}, frameCounts: {a, b}, model, mock }
  */
+// WHAT THIS DOES: THE FUNCTION THAT DECIDES WHO WINS A MATCH. Runs the
+//   comparison in both clip orders, probes distance separately, then builds
+//   the verdict.
 async function compareHeadToHead (clipA, clipB, opts = {}) {
   const framesA = opts.framesA || clipA?.frames
   const framesB = opts.framesB || clipB?.frames
@@ -1230,6 +1273,8 @@ async function compareHeadToHead (clipA, clipB, opts = {}) {
 
 // One run of the three-question comparison call, grammar-locked to
 // COMPARE_SCHEMA. The first clip's frames are presented as Player A.
+// WHAT THIS DOES: One run of the three head-to-head questions, with both
+//   clips' frames attached to a single call.
 async function askComparison (sdk, modelId, firstFrames, secondFrames) {
   return parseScore(await runCompletion(sdk, modelId, {
     history: [{
@@ -1245,6 +1290,8 @@ async function askComparison (sdk, modelId, firstFrames, secondFrames) {
 }
 
 // A↔B mirror for the swapped run's picks.
+// WHAT THIS DOES: Swaps A for B. Used to translate the reversed run's
+//   answers back before comparing them.
 function mirrorPick (pick) {
   return pick === 'A' ? 'B' : pick === 'B' ? 'A' : 'equal'
 }
@@ -1253,6 +1300,9 @@ function mirrorPick (pick) {
 // the same actual clip. Anything else — including one run saying "equal" —
 // is treated as the model failing to genuinely separate the shots, and the
 // dimension scores as equal with a composed reason.
+// WHAT THIS DOES: Only counts an answer if BOTH clip orders agree on the
+//   same real clip. Disagreement is logged and thrown away, and the dimension
+//   scores 'equal'.
 function reconcileOrders (dimension, forwardAnswer, reversedAnswer) {
   const fwd = normalizeAnswer(dimension, forwardAnswer)
   const rev = normalizeAnswer(dimension, reversedAnswer)
@@ -1271,6 +1321,8 @@ function reconcileOrders (dimension, forwardAnswer, reversedAnswer) {
 }
 
 // One stride question against one frame, grammar-locked to the bucket enum.
+// WHAT THIS DOES: Asks the model how far one player is standing from goal,
+//   in strides, from a single frame.
 async function askStrides (sdk, modelId, framePath) {
   return parseScore(await runCompletion(sdk, modelId, {
     history: [{
@@ -1289,6 +1341,8 @@ async function askStrides (sdk, modelId, framePath) {
 // independently and must agree, the same consistency bar the placement
 // pass holds its votes to. Disagreement means the model cannot pin this
 // clip's distance down, reported as null.
+// WHAT THIS DOES: Gets ONE clip's distance bucket by asking two different
+//   pre-shot frames that must give the same answer.
 async function clipStrideBucket (sdk, modelId, pickedFrames, label) {
   const probes = pickedFrames.slice(0, 2)
   const answers = []
@@ -1308,6 +1362,9 @@ async function clipStrideBucket (sdk, modelId, pickedFrames, label) {
 // the positional confound by construction — relative "who is farther"
 // questions proved positional on real runs in every format tried. Reasons
 // shown to players are composed from the buckets, never the model's words.
+// WHAT THIS DOES: Decides the distance dimension by judging each clip ALONE,
+//   then comparing the buckets in code. Judging them separately removes
+//   positional bias by construction.
 async function probeDistance (sdk, modelId, pickedA, pickedB) {
   const bucketA = await clipStrideBucket(sdk, modelId, pickedA, 'clip A')
   const bucketB = await clipStrideBucket(sdk, modelId, pickedB, 'clip B')
@@ -1328,6 +1385,8 @@ async function probeDistance (sdk, modelId, pickedA, pickedB) {
 // Normalize one model answer: guarantee a valid pick and a plain-language
 // reason. A reason that mentions banned analysis words is a prompt bug —
 // logged loudly and replaced with the composed fallback, never shown.
+// WHAT THIS DOES: Cleans up one model answer, and replaces any reason that
+//   narrates the analysis ("in this frame...") with a plain-language fallback.
 function normalizeAnswer (dimension, answer) {
   const pick = ['A', 'B', 'equal'].includes(answer?.pick) ? answer.pick : 'equal'
   let reason = String(answer?.reason ?? '').trim()
@@ -1344,6 +1403,8 @@ function normalizeAnswer (dimension, answer) {
 // the higher table score wins (top corner beats center). The reason is
 // composed from the zones' plain-words phrases, so it is deterministic and
 // can never leak internal zone keys or narrate the grid.
+// WHAT THIS DOES: Decides who wins on placement by comparing the two zones'
+//   table values. No model involved at this step at all.
 function placementDimension (clipA, clipB) {
   const zoneA = clipA?.scores?.placement?.zone || UNCLEAR_ZONE
   const zoneB = clipB?.scores?.placement?.zone || UNCLEAR_ZONE
@@ -1371,6 +1432,9 @@ function placementDimension (clipA, clipB) {
 // dimension, and the tiebreak chain into the final match verdict.
 // `modelDimensions` carries distance/speed/technique/spectacle already
 // reconciled to { winner: 'A'|'B'|'equal', reason }.
+// WHAT THIS DOES: Counts the four dimensions into points, then runs the
+//   tiebreak chain: points, then spectacle, then the /40 totals, then a
+//   genuine tie.
 function buildVerdict (modelDimensions, clipA, clipB, meta) {
   const dimensions = {}
   for (const dim of COMPARE_DIMENSIONS) {
@@ -1420,6 +1484,8 @@ function buildVerdict (modelDimensions, clipA, clipB, meta) {
 // The one-paragraph plain-language "why they won" shown as the headline.
 // Composed in code from the per-dimension reasons, so it is deterministic
 // and stays inside the same plain-language rules as everything else.
+// WHAT THIS DOES: Writes the plain-English 'why they won' paragraph shown to
+//   players. Composed in code, not generated by the model.
 function buildSummary (winner, tiebreak, dimensions, spectacle) {
   if (winner === 'tie') {
     return 'Dead even — nothing separates the two shots on distance, pace, strike, or placement, and neither finish stands out over the other.'
@@ -1453,6 +1519,8 @@ function buildSummary (winner, tiebreak, dimensions, spectacle) {
 // Deterministic offline stand-in for the reconciled model dimensions, used
 // only when QVAC_MOCK_SCORING=1 so the full verdict plumbing can run
 // without a model.
+// WHAT THIS DOES: Fake head-to-head answers for offline testing, so the
+//   whole pipeline can run without loading the model.
 function mockModelDimensions (clipA, clipB) {
   const answer = (dim, a, b) => {
     const winner = a === b ? 'equal' : a > b ? 'A' : 'B'
@@ -1470,11 +1538,13 @@ function mockModelDimensions (clipA, clipB) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// WHAT THIS DOES: Adds the four criteria together into a total out of 40.
 function sumScores (scores) {
   if (!scores) return 0
   return SCORE_FIELDS.reduce((sum, f) => sum + (Number(scores[f]?.score) || 0), 0)
 }
 
+// WHAT THIS DOES: Forces any score into a whole number between 0 and 10.
 function clampScore (n) {
   const v = Math.round(Number(n))
   if (!Number.isFinite(v)) return 0
@@ -1483,6 +1553,8 @@ function clampScore (n) {
 
 // The JSON schema constrains the model to valid JSON, but stay defensive in
 // case a model emits leading/trailing prose despite the grammar.
+// WHAT THIS DOES: Turns the model's JSON text into a real object, with a
+//   fallback that digs out the JSON if the model wrapped it in prose.
 function parseScore (content) {
   const text = String(content ?? '').trim()
   try {
@@ -1500,6 +1572,8 @@ function parseScore (content) {
 // column (or anything that somehow slipped past the enum grammar) fails the
 // table lookup and maps to the lowest-value cell, same treatment as before
 // for unknown placement.
+// WHAT THIS DOES: Sticks the row and column together into a zone key like
+//   'top_left', defaulting to the lowest-value cell if either was unclear.
 function resolveZone (placement) {
   const composed = `${placement?.row}_${placement?.column}`
   const unclear = PLACEMENT_ZONE_SCORES[composed] === undefined
@@ -1511,6 +1585,8 @@ function resolveZone (placement) {
 // Placement is special: its zone comes from the vision pass, never the judge,
 // and its score is looked up in PLACEMENT_ZONE_SCORES so the number can never
 // contradict the zone.
+// WHAT THIS DOES: Assembles the final scorecard: the model's three scores
+//   plus the placement score looked up from the zone table.
 function finalizeScore (parsed, placement, meta) {
   const scores = {}
   for (const field of JUDGED_FIELDS) {
@@ -1542,6 +1618,8 @@ function finalizeScore (parsed, placement, meta) {
 // matching "why" texts mean the model copy-pasted one justification across
 // criteria. That is a prompt bug we want to see during testing, so it is
 // logged loudly instead of shipped silently to the players.
+// WHAT THIS DOES: Shouts in the console if two criteria gave near-identical
+//   justifications, which means the model copy-pasted one reason.
 function warnOnDuplicateExplanations (scores) {
   const entries = SCORE_FIELDS.map((field) => ({
     field,
@@ -1561,6 +1639,8 @@ function warnOnDuplicateExplanations (scores) {
 }
 
 // Case, punctuation, and spacing differences don't count as different text.
+// WHAT THIS DOES: Strips case and punctuation so two explanations can be
+//   compared fairly.
 function normalizeExplanation (text) {
   return String(text ?? '')
     .toLowerCase()
@@ -1571,6 +1651,7 @@ function normalizeExplanation (text) {
 
 // Exact match after normalization, or near-total word overlap — a copy-paste
 // with a couple of words swapped still counts as the same text.
+// WHAT THIS DOES: True if two texts share 90% or more of their words.
 function nearIdentical (a, b) {
   if (a === b) return true
   const wordsA = new Set(a.split(' '))
@@ -1584,6 +1665,8 @@ function nearIdentical (a, b) {
 }
 
 // Deterministic offline stand-in used only when QVAC_MOCK_SCORING=1.
+// WHAT THIS DOES: Fake clip scores for offline testing, so the app can run
+//   end to end without the model.
 function mockScore (frames, metadata) {
   const seed = frames.length + Math.round((metadata.duration || 0) * 10)
   const pick = (offset) => 4 + ((seed + offset) % 7) // 4..10

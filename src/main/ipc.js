@@ -6,6 +6,8 @@ const escrow = require('./escrow')
 const scoring = require('./scoring')
 const settlement = require('./settlement')
 
+// WHAT THIS DOES: Registers every message the UI is allowed to send to the
+//   main process. This is the full list of what the app can be asked to do.
 function registerHandlers () {
   ipcMain.handle('wallet:get-address', () => {
     return wallet.getAddress()

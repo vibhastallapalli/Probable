@@ -10,6 +10,8 @@ const { registerHandlers } = require('./ipc')
 const isDev = !app.isPackaged
 const DEV_SERVER_URL = 'http://localhost:5173'
 
+// WHAT THIS DOES: Opens the app window, with the UI locked down so it has no
+//   filesystem access and no Node APIs.
 function createWindow () {
   const win = new BrowserWindow({
     width: 1024,

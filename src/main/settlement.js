@@ -28,6 +28,8 @@ const scoring = require('./scoring')
  * @param {object} [verdict] - Precomputed compareHeadToHead() verdict
  * @returns {Promise<object>}
  */
+// WHAT THIS DOES: Takes the verdict and pays the winner. A tie leaves the
+//   money completely untouched — there is no automatic refund or split.
 async function settleMatch (matchId, clipA, clipB, addressA, addressB, verdict) {
   const status = await escrow.getEscrowStatus(matchId)
 

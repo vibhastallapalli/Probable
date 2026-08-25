@@ -621,6 +621,26 @@ a { color: var(--blu); }
 .slot__err { font-family: var(--sans); font-size: 11.5px; line-height: 1.4; color: var(--red); }
 .slot > .btn { margin-top: auto; align-self: flex-start; }
 
+.clip-issue {
+  margin-top: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--amb-ln);
+  border-radius: var(--r1);
+  background: var(--amb-bg);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--txt2);
+}
+
+.clip-issue--technical { border-color: var(--red-ln); background: var(--red-bg); }
+.clip-issue__title { margin-bottom: 4px; font-weight: 700; color: var(--amb); }
+.clip-issue--technical .clip-issue__title { color: var(--red); }
+.clip-issue__text + .clip-issue__text { margin-top: 3px; }
+.clip-issue__evidence { margin-top: 5px; color: var(--txt3); }
+.clip-issue__actions { margin-top: 7px; color: var(--txt1); }
+.clip-issue__actions ul { margin: 3px 0 0 17px; padding: 0; }
+
 /* --- scorecards, hidden until asked for -------------------------------------------------------- */
 
 .reveal { margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--line1); }

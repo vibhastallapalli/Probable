@@ -56,7 +56,7 @@ const DEFAULT_MODEL_INFO = { name: 'SmolVLM2 2.2B', id: '', runtime: 'QVAC' }
 const SIDES = ['A', 'B']
 
 function emptySlot () {
-  return { path: null, probe: null, score: null, status: 'idle', error: null, drag: false }
+  return { path: null, probe: null, score: null, status: 'idle', error: null, issue: null, drag: false }
 }
 
 // Status pill per slot state. 'idle' deliberately has no pill — a loaded but
@@ -66,6 +66,7 @@ const SLOT_STATUS = {
   preparing: { text: 'loading model', cls: 'pill' },
   scoring: { text: 'judging…', cls: 'pill pill--warn' },
   done: { text: '✓ judged', cls: 'pill pill--ok' },
+  needs_better_clip: { text: 'new clip needed', cls: 'pill pill--warn' },
   failed: { text: 'failed', cls: 'pill pill--bad' },
 }
 
@@ -142,6 +143,36 @@ function StatusBadge ({ modelInfo, mockMode }) {
   )
 }
 
+// One evidence-based report shared by Judge and Predict mode. Clip-quality
+// problems use the amber treatment; a worker/model failure uses red so the
+// user is never told to replace a perfectly valid clip because the system
+// itself failed.
+function ClipIssue ({ issue }) {
+  if (!issue) return null
+  const technical = issue.code === 'ANALYSIS_ERROR'
+  return (
+    <div className={`clip-issue${technical ? ' clip-issue--technical' : ''}`}>
+      <div className="clip-issue__title">{issue.title}</div>
+      {issue.observations?.map((observation) => (
+        <div key={observation} className="clip-issue__text">{observation}</div>
+      ))}
+      {issue.evidence && (
+        <div className="clip-issue__evidence">
+          Evidence: {issue.evidence.usable} of {issue.evidence.checked} analyzed moments supported a usable placement.
+        </div>
+      )}
+      {issue.suggestions?.length > 0 && (
+        <div className="clip-issue__actions">
+          <b>What to try:</b>
+          <ul>
+            {issue.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * One side's clip slot — drop a video on it, or click to browse.
  *
@@ -190,6 +221,7 @@ function ClipSlot ({ side, slot, busy, onPick, onDrop, onDrag }) {
       {slot.probe?.lowFps && (
         <div className="warn-note">⚠ under {slot.probe.minFps} fps — judging may be less reliable</div>
       )}
+      {slot.issue && <ClipIssue issue={slot.issue} />}
       {slot.error && <div className="slot__err">{slot.error}</div>}
       <button className="btn btn--ghost btn--sm" onClick={() => onPick(side)} disabled={busy}>Replace clip</button>
     </div>
@@ -223,7 +255,10 @@ function Scorecard ({ side, score }) {
             <span className="card__gloss">[{gloss}]</span>{' '}
             <span className="card__val">— {score.scores[key].score} of 10</span>
             {key === 'placement' && score.scores[key].zone && (
-              <span className="zone"> · zone: {ZONE_LABELS[score.scores[key].zone] ?? score.scores[key].zone}</span>
+              <span className="zone">
+                {' '}· zone: {ZONE_LABELS[score.scores[key].zone] ?? score.scores[key].zone}
+                {score.scores[key].evidenceStatus === 'RECOVERED' ? ' · recovered after retry' : ''}
+              </span>
             )}
           </div>
           <div className="card__why">Why: {score.scores[key].explanation}</div>
@@ -436,7 +471,7 @@ export default function App () {
     const todo = [...pending]
     setScoring(true)
     setVerdict(null)
-    todo.forEach((s) => patchSlot(s, { status: 'queued', error: null }))
+    todo.forEach((s) => patchSlot(s, { status: 'queued', error: null, issue: null }))
     try {
       // One-time model download / warm-up first, so judging never races the
       // worker init timeout on first run. A no-op once the model is loaded.
@@ -451,23 +486,46 @@ export default function App () {
         .catch(() => { /* badge keeps its last known value */ })
 
       for (const side of todo) {
-        patchSlot(side, { status: 'scoring' })
+        patchSlot(side, { status: 'scoring', error: null, issue: null })
         emit(`Judging clip ${side} on this device via QVAC…`)
         try {
           const result = await window.probable.clip.score(slots[side].path)
-          patchSlot(side, { score: result, status: 'done' })
+          if (result.status === 'NEEDS_BETTER_CLIP') {
+            patchSlot(side, {
+              score: null,
+              status: 'needs_better_clip',
+              issue: result.issue,
+              error: null,
+            })
+            emit(`Clip ${side}: ${result.issue.title} — ${result.issue.observations.join(' ')}`)
+            continue
+          }
+
+          patchSlot(side, { score: result, status: 'done', issue: null, error: null })
+          if (result.placementReport?.status === 'RECOVERED') {
+            emit(`Clip ${side}: placement recovered using additional nearby moments`)
+          }
           // No total in the log on purpose — the Log panel is on screen, and
           // leaking the two numbers there defeats the hidden scorecards.
           emit(`Clip ${side} judged from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
         } catch (err) {
           // One clip failing must not abandon the other.
-          patchSlot(side, { status: 'failed', error: err.message })
+          patchSlot(side, {
+            score: null,
+            status: 'failed',
+            issue: null,
+            error: `Analysis could not finish: ${err.message}. Retry the analysis; if it repeats, restart the on-device model.`,
+          })
           emit(`Clip ${side} failed: ${err.message}`)
         }
       }
     } catch (err) {
       emit(`Model prepare failed: ${err.message}`)
-      todo.forEach((s) => patchSlot(s, { status: 'failed', error: err.message }))
+      todo.forEach((s) => patchSlot(s, {
+        status: 'failed',
+        issue: null,
+        error: `Model preparation failed: ${err.message}`,
+      }))
     } finally {
       setScoring(false)
     }
@@ -506,6 +564,8 @@ export default function App () {
       setSettleResult(result)
       if (result.outcome === 'unfunded') {
         emit(`Settle: unfunded, match wallet balance is ${result.balance} USDT`)
+      } else if (result.outcome === 'awaiting_clearer_clip') {
+        emit('Settle: blocked because at least one clip still needs resolved placement evidence')
       } else if (result.outcome === 'tied') {
         emit(`Settle: tied (${result.totalA} vs ${result.totalB}), escrow untouched, needs human review`)
       } else if (result.outcome === 'already_settled') {
@@ -1085,6 +1145,7 @@ function PredictTab ({ address }) {
   const [pScoring, setPScoring] = useState(false)
   const [pPreparingModel, setPPreparingModel] = useState(false)
   const [pClipScore, setPClipScore] = useState(null)
+  const [pClipIssue, setPClipIssue] = useState(null)
 
   // --- Settlement ---
   const [settling, setSettling] = useState(false)
@@ -1152,6 +1213,7 @@ function PredictTab ({ address }) {
       setActiveBet(bet)
       setSettleResult(null)
       setPClipScore(null)
+      setPClipIssue(null)
       setPVideoPath(null)
       pEmit(`Loaded bet ${bet.id.slice(0, 8)}… | balance: ${bet.escrowBalance} USDt | ${bet.status}`)
     } catch (err) { pEmit(`Load bet failed: ${err.message}`) }
@@ -1183,6 +1245,7 @@ function PredictTab ({ address }) {
       if (!picked) { pEmit('Video pick cancelled'); return }
       setPVideoPath(picked)
       setPClipScore(null)
+      setPClipIssue(null)
       pEmit(`Picked clip: ${picked}`)
     } catch (err) { pEmit(`Pick failed: ${err.message}`) }
   }
@@ -1190,6 +1253,7 @@ function PredictTab ({ address }) {
   async function handleScoreClip () {
     if (!pVideoPath) return
     setPScoring(true)
+    setPClipIssue(null)
     try {
       setPPreparingModel(true)
       pEmit('Preparing on-device model…')
@@ -1199,9 +1263,31 @@ function PredictTab ({ address }) {
 
       pEmit('Scoring clip locally…')
       const result = await window.probable.clip.score(pVideoPath)
+      if (result.status === 'NEEDS_BETTER_CLIP') {
+        setPClipScore(null)
+        setPClipIssue(result.issue)
+        pEmit(`${result.issue.title}: ${result.issue.observations.join(' ')}`)
+        return
+      }
       setPClipScore(result)
+      setPClipIssue(null)
+      if (result.placementReport?.status === 'RECOVERED') {
+        pEmit('Placement recovered using additional nearby moments')
+      }
       pEmit(`Scored: total ${result.total} of ${MAX_TOTAL} from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
-    } catch (err) { pEmit(`Score failed: ${err.message}`) }
+    } catch (err) {
+      setPClipScore(null)
+      setPClipIssue({
+        code: 'ANALYSIS_ERROR',
+        title: 'Analysis could not finish',
+        observations: [
+          'Probable encountered a model or processing error. This does not mean the clip itself was bad.',
+        ],
+        suggestions: ['Run the analysis again. If it repeats, restart the on-device model and retry.'],
+        evidence: null,
+      })
+      pEmit(`Score failed: ${err.message}`)
+    }
     finally { setPPreparingModel(false); setPScoring(false) }
   }
 
@@ -1213,6 +1299,7 @@ function PredictTab ({ address }) {
       const playerName = side === 'A' ? updated.playerAChoice.name : updated.playerBChoice.name
       pEmit(`Clip submitted for ${playerName} (side ${side}) — total ${pClipScore.total}/${MAX_TOTAL}`)
       setPClipScore(null)
+      setPClipIssue(null)
       setPVideoPath(null)
     } catch (err) { pEmit(`Submit failed: ${err.message}`) }
   }
@@ -1235,6 +1322,8 @@ function PredictTab ({ address }) {
         pEmit(`Settle: unfunded, balance is ${result.balance} USDT`)
       } else if (result.outcome === 'tied') {
         pEmit('Settle: tied, escrow untouched')
+      } else if (result.outcome === 'awaiting_clearer_clip') {
+        pEmit('Settle blocked: at least one submitted clip lacks resolved placement evidence')
       } else if (result.outcome === 'already_settled') {
         pEmit(`Already settled: winner ${result.winnerAddress?.slice(0, 10)}…`)
       }
@@ -1553,6 +1642,7 @@ function PredictTab ({ address }) {
                     </span>
                   )}
                 </div>
+                <ClipIssue issue={pClipIssue} />
                 {pClipScore && (
                   <div style={{ marginTop: 10 }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>

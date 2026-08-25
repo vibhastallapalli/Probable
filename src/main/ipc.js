@@ -71,7 +71,7 @@ function registerHandlers () {
   ipcMain.handle('clip:score', async (_event, videoPath) => {
     const { duration, fps, lowFps } = await scoring.probeVideo(videoPath)
     const frames = await scoring.extractFrames(videoPath, { duration })
-    const score = await scoring.scoreClip(frames, { duration })
+    const score = await scoring.scoreClip(frames, { duration, fps, lowFps })
     return { ...score, videoPath, fps, lowFps }
   })
 

@@ -21,6 +21,7 @@ const scoring = require('./scoring')
  *
  * Returns a single result object whose `outcome` is one of:
  *   'unfunded'        — match wallet has no USDT yet; nothing was touched
+ *   'awaiting_clearer_clip' — placement evidence is unresolved; nothing was touched
  *   'tied'            — the verdict is a dead heat; escrow left intact for human review
  *   'already_settled' — escrow already paid out; the recorded result is returned, no transfer
  *   'settled'         — winner determined, transfer sent, escrow settled
@@ -56,6 +57,22 @@ async function settleMatch (matchId, clipA, clipB, addressA, addressB, verdict, 
       matchId,
       balance: status.balance,
       matchWalletAddress: status.matchWalletAddress
+    }
+  }
+
+  // A match cannot pay out when either clip lacks the placement evidence the
+  // comparison policy requires. Keep the funded escrow untouched while the
+  // affected player supplies a replacement clip.
+  if (!scoring.hasResolvedPlacement(clipA) ||
+      !scoring.hasResolvedPlacement(clipB)) {
+    return {
+      outcome: 'awaiting_clearer_clip',
+      matchId,
+      balance: status.balance,
+      unresolved: {
+        clipA: !scoring.hasResolvedPlacement(clipA),
+        clipB: !scoring.hasResolvedPlacement(clipB),
+      },
     }
   }
 

@@ -1,0 +1,65 @@
+# Probable placement policy
+
+`placement-policy.sleec` is the checked policy for Probable's placement
+fallback. It is a design-time artifact, not a runtime dependency: JavaScript
+still analyzes the clip and implements the behavior, while LEGOS-SLEEC checks
+the policy for contradictory rules and reachable bad outcomes.
+
+## What the formal state represents
+
+- `PlacementDecision` represents the result of the placement pipeline.
+- `placementResolved` says whether repeated evidence produced a supported
+  row and column.
+- `recoveryAttempted` separates the initial three-frame check from the one
+  bounded visual recovery.
+- The four reason measures represent ball, goal, shot-moment, and placement
+  disagreement evidence. Several may be true together.
+- `technicalFailure` and `technicalRetryExhausted` keep model/system failures
+  separate from clip-quality feedback.
+- `MatchSettlementRequested` and `matchHasUnresolvedClip` represent the final
+  payout guard.
+
+The implementation corresponding to those states lives in:
+
+- `src/main/placement-policy.js` — evidence thresholds, recovery selection,
+  and user-facing feedback.
+- `src/main/scoring.js` — Qwen calls and pipeline orchestration.
+- `src/main/settlement.js` — unresolved-match payout guard.
+- `src/renderer/App.jsx` — clip-specific and system-specific reports.
+
+## Checked result
+
+The official LEGOS-SLEEC command-line checker produced these results:
+
+- `placement-policy-draft-conflict.sleec`: conflict detected between the old
+  unresolved-placement fallback and the evidence-integrity rule.
+- `placement-policy.sleec` conflict analysis: all 19 rules reported
+  `Not Conflicting`.
+- `placement-policy.sleec` concern analysis: all 13 harmful-outcome concerns
+  reported `concern not raised`.
+
+In plain language, the corrected formal model contains no detected rule
+conflicts, and it makes the listed bad outcomes unreachable. Those outcomes
+include assigning placement after failed recovery, continuing unsupported
+scoring, retrying forever, blaming the clip for a technical failure, omitting
+reason-specific guidance, and settling a match with an unresolved clip.
+
+From the LEGOS-SLEEC repository directory, with its Python dependencies
+installed, the checks are:
+
+```bash
+python3 commandline_tool.py /path/to/Probable/sleec/placement-policy-draft-conflict.sleec c
+python3 commandline_tool.py /path/to/Probable/sleec/placement-policy.sleec c
+python3 commandline_tool.py /path/to/Probable/sleec/placement-policy.sleec con
+```
+
+Run `npm test` in Probable to check that the JavaScript implementation follows
+the same branches.
+
+## Boundary of the claim
+
+LEGOS-SLEEC checks the consistency and consequences of the written policy. It
+does not inspect video, validate Qwen's visual observations, prove that the
+JavaScript is identical to the SLEEC model, or run while a user scores a clip.
+Those implementation details are covered separately by the automated tests
+and by clip-level testing in the app.

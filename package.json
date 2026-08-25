@@ -10,6 +10,7 @@
     "dev:vite": "vite",
     "dev:electron": "wait-on tcp:5173 && electron .",
     "build": "vite build",
+    "test": "node --test test/*.test.js",
     "start": "electron ."
   },
   "dependencies": {

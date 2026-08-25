@@ -1,0 +1,26 @@
+// Deliberately conflicting draft used to demonstrate what LEGOS-SLEEC catches.
+// The OldBottomCenterFallback rules represent the former behavior: unresolved
+// evidence still became a placement and scoring continued. The integrity rules
+// require the opposite outcome for the same situation.
+
+def_start
+    event PlacementDecision
+    event AssignPlacement
+    event ContinueScoring
+
+    measure placementResolved : boolean
+    measure recoveryAttempted : boolean
+    measure technicalFailure : boolean
+def_end
+
+rule_start
+    OldBottomCenterFallback when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then AssignPlacement
+    EvidenceIntegrity when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then not AssignPlacement
+
+    OldContinueAfterFallback when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then ContinueScoring
+    StopUnsupportedScoring when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then not ContinueScoring
+rule_end

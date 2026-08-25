@@ -1,0 +1,132 @@
+// Probable placement fallback policy.
+//
+// JavaScript evaluates the video evidence. This model represents the result
+// as PlacementDecision plus the measures below. LEGOS-SLEEC checks what the
+// application may do after that result; it does not inspect the video, run
+// the vision model, or execute inside Probable at runtime.
+
+def_start
+    event PlacementDecision
+    event RetryVisualEvidence
+    event RetryTechnicalAnalysis
+    event AssignPlacement
+    event ContinueScoring
+    event ShowClipIssueReport
+    event ShowBallGuidance
+    event ShowGoalGuidance
+    event ShowShotMomentGuidance
+    event ShowDisagreementGuidance
+    event ShowSystemError
+    event MatchSettlementRequested
+    event SelectWinner
+    event SettleMatch
+
+    measure placementResolved : boolean
+    measure recoveryAttempted : boolean
+    measure technicalFailure : boolean
+    measure technicalRetryExhausted : boolean
+    measure ballNotLocalized : boolean
+    measure goalNotConfirmed : boolean
+    measure shotMomentNotCaptured : boolean
+    measure placementDisagreement : boolean
+    measure matchHasUnresolvedClip : boolean
+def_end
+
+rule_start
+    // A visual evidence failure gets exactly one targeted recovery attempt.
+    InitialVisualRecovery when PlacementDecision and (((not {placementResolved}) and (not {recoveryAttempted})) and (not {technicalFailure}))
+        then RetryVisualEvidence
+
+    // A resolved initial check or recovery may proceed to ordinary scoring.
+    ResolvedAssignPlacement when PlacementDecision and ({placementResolved} and (not {technicalFailure}))
+        then AssignPlacement
+    ResolvedContinueScoring when PlacementDecision and ({placementResolved} and (not {technicalFailure}))
+        then ContinueScoring
+
+    // A failed recovery must stop placement, scoring, and any second visual retry.
+    UnresolvedNoPlacement when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then not AssignPlacement
+    UnresolvedNoScoring when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then not ContinueScoring
+    UnresolvedNoSecondRecovery when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then not RetryVisualEvidence
+    UnresolvedShowReport when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then ShowClipIssueReport
+
+    // More than one evidence reason may be true, so the report may include
+    // several useful observations and suggestions at the same time.
+    UnresolvedBallGuidance when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and ((not {technicalFailure}) and {ballNotLocalized}))
+        then ShowBallGuidance
+    UnresolvedGoalGuidance when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and ((not {technicalFailure}) and {goalNotConfirmed}))
+        then ShowGoalGuidance
+    UnresolvedShotMomentGuidance when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and ((not {technicalFailure}) and {shotMomentNotCaptured}))
+        then ShowShotMomentGuidance
+    UnresolvedDisagreementGuidance when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and ((not {technicalFailure}) and {placementDisagreement}))
+        then ShowDisagreementGuidance
+
+    // A model/system call failure is retried once on the same evidence. If
+    // the retry also fails, report a system error rather than blaming the clip.
+    TechnicalRetry when PlacementDecision and ({technicalFailure} and (not {technicalRetryExhausted}))
+        then RetryTechnicalAnalysis
+    TechnicalRetryExhausted when PlacementDecision and ({technicalFailure} and {technicalRetryExhausted})
+        then ShowSystemError
+    TechnicalNoSecondRetry when PlacementDecision and ({technicalFailure} and {technicalRetryExhausted})
+        then not RetryTechnicalAnalysis
+    TechnicalNoClipBlame when PlacementDecision and ({technicalFailure} and {technicalRetryExhausted})
+        then not ShowClipIssueReport
+    TechnicalNoPlacement when PlacementDecision and ({technicalFailure} and {technicalRetryExhausted})
+        then not AssignPlacement
+    TechnicalNoScoring when PlacementDecision and ({technicalFailure} and {technicalRetryExhausted})
+        then not ContinueScoring
+
+    // Settlement has its own guard so an unresolved clip cannot pay anyone.
+    UnresolvedMatchNoWinner when MatchSettlementRequested and {matchHasUnresolvedClip}
+        then not SelectWinner
+    UnresolvedMatchNoSettlement when MatchSettlementRequested and {matchHasUnresolvedClip}
+        then not SettleMatch
+rule_end
+
+concern_start
+    // These concerns describe outcomes that must remain unreachable.
+    C1 when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then AssignPlacement
+    C2 when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then ContinueScoring
+    C3 when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then RetryVisualEvidence
+    C4 when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and (not {technicalFailure}))
+        then not ShowClipIssueReport
+
+    C5 when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and ((not {technicalFailure}) and {ballNotLocalized}))
+        then not ShowBallGuidance
+    C6 when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and ((not {technicalFailure}) and {goalNotConfirmed}))
+        then not ShowGoalGuidance
+    C7 when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and ((not {technicalFailure}) and {shotMomentNotCaptured}))
+        then not ShowShotMomentGuidance
+    C8 when PlacementDecision and (((not {placementResolved}) and {recoveryAttempted}) and ((not {technicalFailure}) and {placementDisagreement}))
+        then not ShowDisagreementGuidance
+
+    C9 when PlacementDecision and ({technicalFailure} and {technicalRetryExhausted})
+        then RetryTechnicalAnalysis
+    C10 when PlacementDecision and ({technicalFailure} and {technicalRetryExhausted})
+        then ShowClipIssueReport
+    C11 when PlacementDecision and ({technicalFailure} and {technicalRetryExhausted})
+        then not ShowSystemError
+
+    C12 when MatchSettlementRequested and {matchHasUnresolvedClip}
+        then SelectWinner
+    C13 when MatchSettlementRequested and {matchHasUnresolvedClip}
+        then SettleMatch
+concern_end
+
+relation_start
+    // A completed technical failure cannot simultaneously be a resolved
+    // placement, and an exhausted retry implies that a technical failure
+    // occurred. These invariants rule out impossible status combinations.
+    measure invariant ((not {technicalFailure}) or (not {placementResolved}))
+    measure invariant ({technicalFailure} or (not {technicalRetryExhausted}))
+
+    // A final visual failure must carry at least one evidence-based reason.
+    // The disjunction deliberately allows several reason flags at once.
+    measure invariant (({placementResolved} or (not {recoveryAttempted})) or ({technicalFailure} or ((({ballNotLocalized} or {goalNotConfirmed}) or {shotMomentNotCaptured}) or {placementDisagreement})))
+relation_end

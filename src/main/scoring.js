@@ -20,23 +20,30 @@ const execFileAsync = promisify(execFile)
 const ffmpegPath = require('ffmpeg-static')
 const ffprobePath = require('ffprobe-static').path
 
+const {
+  PLACEMENT_ISSUES,
+  assessPlacementEvidence,
+  buildPlacementFeedback,
+  selectPlacementRecoveryFrames,
+} = require('./placement-policy')
+
 // ---------------------------------------------------------------------------
-// Scoring prompts — tune the rubric here. Scoring runs in three passes so the
+// Scoring prompts — tune the rubric here. Scoring runs in three stages so the
 // model commits to what it can actually see before it judges anything:
 //
-//   Pass 1 (describe, frames attached): report only what is literally visible
+//   Stage 1 (placement readiness, one image per call): each tail image reports
+//   ball visibility, full-goal visibility, ball/goal relation, row, and
+//   column. At least two usable observations and a strict majority are
+//   required. A failed first attempt gets one targeted retry with unused
+//   nearby moments. A left/right verdict must survive a mirrored-image check;
+//   failed evidence remains unresolved instead of becoming center or
+//   bottom-center.
+//   Stage 2 (describe, frames attached): report only what is literally visible
 //   in the sampled frames — including how far the shooter stands from the
 //   goal, how fast the shot travels, and the kicking foot at contact. No
 //   opinions, no scores, no football knowledge.
-//   Pass 2 (placement, one tail frame per call): the last few frames are each
-//   shown alone — one image, one row+column commitment — and the answers are
-//   majority-voted, so pre-shot frames with the ball still on the ground
-//   cannot drag the verdict down to "bottom, rolling". A left/right verdict
-//   must additionally survive a mirrored-image consistency check before it is
-//   trusted, because small VLMs guess chirality with confidence; an
-//   unverified side degrades to the center column instead of a coin flip.
-//   Pass 3 (judge, text only): score skill/difficulty/aesthetic from the
-//   pass-1 description plus the pass-2 zone, handed over as a settled fact
+//   Stage 3 (judge, text only): score skill/difficulty/aesthetic from the
+//   stage-2 description plus the stage-1 zone, handed over as a settled fact
 //   so all three criteria reason about the same finishing spot instead of
 //   each re-guessing it from the description. Every point still traces back
 //   to something the model claimed to see rather than to what usually
@@ -203,9 +210,29 @@ const PLACEMENT_PROMPT = `You are looking at one still frame from the end of a s
 clip, at or just after the moment a shot reaches the goal. The ball may be in
 flight, crossing the line, or already in the net.
 
-First find the ball in this image, then find the crossbar and the two
-goalposts, then compare them. Report the ball's position as a row and a
-column.
+First report the visual evidence. These fields are separate so that a missing
+ball, an incomplete goal, and a disagreement about placement never get treated
+as the same problem.
+
+ball_visibility — whether you can locate the actual football:
+- visible: the ball itself can be located
+- not_visible: the ball itself cannot be seen
+- unclear: a possible ball is present, but you cannot distinguish it reliably
+
+goal_visibility — whether the goal mouth can be used as a complete reference:
+- full: the crossbar and both goalposts are visible enough to divide the goal
+- partial: only part of that goal frame is visible
+- not_visible: no usable goal is visible
+- unclear: you cannot tell whether the complete goal frame is present
+
+ball_goal_relation — what the visible ball is doing relative to the goal:
+- in_or_entering: the ball is inside, crossing into, or clearly entering the goal
+- outside: the ball is visibly outside and not entering the goal
+- unclear: the ball's relationship to the goal cannot be determined
+
+Only when the ball is visible, the full goal is visible, and the ball is in or
+entering the goal, report its position as a row and a column. Otherwise answer
+unclear for both row and column.
 
 Everything is from the CAMERA'S point of view — the picture exactly as you
 see it. Never answer from the shooter's or the goalkeeper's point of view.
@@ -215,13 +242,13 @@ row — the ball's height:
 - mid: in the middle third, clearly below the crossbar and clearly above
   the ground
 - bottom: in the bottom third, on or near the ground
-- unclear: the ball is not visible, or it is not in or entering the goal
+- unclear: the evidence conditions above were not all satisfied
 
 column — the ball's side of the goal:
 - left: near the goalpost closer to the LEFT edge of the picture
 - center: near the middle of the goal, away from both posts
 - right: near the goalpost closer to the RIGHT edge of the picture
-- unclear: the ball is not visible, or it is not in or entering the goal
+- unclear: the evidence conditions above were not all satisfied
 
 Then, in one or two sentences, say where the shot ended up the way you
 would casually tell a friend — for example "curled into the top left
@@ -325,10 +352,6 @@ const MAX_TOTAL = 30 + 10 * PLACEMENT_WEIGHT
 
 const PLACEMENT_ZONES = Object.keys(PLACEMENT_ZONE_SCORES)
 
-// Zone the rubric maps "unclear or no goal described" to — the lowest-value
-// cell, matching the old behavior of scoring unclear placement low.
-const UNCLEAR_ZONE = 'bottom_center'
-
 // Plain-words rendering of each zone, used wherever a zone is spoken about
 // in player-facing text (the judge's settled-fact line and the placement
 // "why" fallback). Phrased to follow "the ball went ..." / "the shot went
@@ -365,11 +388,21 @@ const scoreField = {
 const placementField = {
   type: 'object',
   properties: {
+    ball_visibility: { type: 'string', enum: ['visible', 'not_visible', 'unclear'] },
+    goal_visibility: { type: 'string', enum: ['full', 'partial', 'not_visible', 'unclear'] },
+    ball_goal_relation: { type: 'string', enum: ['in_or_entering', 'outside', 'unclear'] },
     row: { type: 'string', enum: ['top', 'mid', 'bottom', 'unclear'] },
     column: { type: 'string', enum: ['left', 'center', 'right', 'unclear'] },
     explanation: { type: 'string' },
   },
-  required: ['row', 'column', 'explanation'],
+  required: [
+    'ball_visibility',
+    'goal_visibility',
+    'ball_goal_relation',
+    'row',
+    'column',
+    'explanation',
+  ],
   additionalProperties: false,
 }
 
@@ -456,6 +489,15 @@ const DEFAULT_MAX_FRAMES = Number(process.env.QVAC_MAX_FRAMES) || 16
 // batch that includes pre-shot frames (ball on the ground) reliably drags the
 // answer toward "bottom, rolling".
 const PLACEMENT_FRAME_COUNT = Number(process.env.QVAC_PLACEMENT_FRAMES) || 3
+
+// One bounded visual recovery attempt polls additional frames that were
+// already extracted but were not part of the initial placement vote.
+const PLACEMENT_RECOVERY_FRAME_COUNT =
+  Number(process.env.QVAC_PLACEMENT_RECOVERY_FRAMES) || 3
+
+// A failed or malformed single-frame model response is retried once against
+// the same evidence. This is a system recovery, not a clip-quality judgment.
+const PLACEMENT_CALL_ATTEMPTS = 2
 
 // How many key frames per clip the head-to-head pass sends. Both clips must
 // share one context window: at the FRAME_MAX_EDGE cap a 16:9 frame costs
@@ -804,10 +846,9 @@ async function prepareModel (onProgress) {
 /**
  * Score a clip's frames on the four Puskás-style criteria via the local model.
  *
- * Three passes: the model first describes what is literally visible in the
- * frames, then classifies the goal-mouth zone while looking at the tail
- * frames, then scores the three judged criteria from the description plus
- * that zone, handed to the judge as a settled fact.
+ * Three stages: the model first checks whether placement has enough visual
+ * evidence, including one bounded recovery attempt when needed. Only a clip
+ * with resolved placement proceeds to the description and judge passes.
  * Judging from its own literal account keeps the score anchored to what is
  * actually in the clip instead of what usually happens in football highlights,
  * and answering the zone question visually keeps placement anchored to where
@@ -820,6 +861,8 @@ async function prepareModel (onProgress) {
  *   { scores: { skill:{score,explanation}, difficulty, aesthetic, placement },
  *     total, frameCount, duration, model, mock }
  */
+// WHAT THIS DOES: Checks placement evidence first, then describes and judges
+//   only a clip that passed that gate.
 async function scoreClip (frames, metadata = {}) {
   if (!Array.isArray(frames) || frames.length === 0) {
     throw new Error('scoreClip requires a non-empty array of frame paths')
@@ -839,11 +882,42 @@ async function scoreClip (frames, metadata = {}) {
   // and overflow the window partway through a batch.
   await clearCache(sdk)
 
+  const baseMeta = {
+    frameCount: frames.length,
+    frames,
+    duration: metadata.duration || 0,
+    model: MODEL_INFO.id,
+    mock: false,
+  }
+
+  // Stage 1 — placement readiness. Every frame returns explicit scene
+  // evidence as well as row/column. A lone answer cannot settle the result;
+  // an unresolved first attempt gets one targeted retry with unused frames.
+  const placement = await classifyPlacement(sdk, modelId, frames, metadata)
+  if (placement.status === 'UNRESOLVED') {
+    return {
+      status: 'NEEDS_BETTER_CLIP',
+      issue: placement.feedback,
+      placement: {
+        status: placement.status,
+        issues: placement.issues,
+        evidence: placement.evidence,
+      },
+      ...baseMeta,
+    }
+  }
+
+  const { zone } = resolveZone(placement)
+  if (!zone) {
+    throw new Error('Resolved placement did not map to a valid goal zone')
+  }
+
   const durationLine = metadata.duration
     ? `\nClip duration: ${metadata.duration.toFixed(1)}s across ${frames.length} sampled frames.`
     : `\n${frames.length} sampled frames.`
 
-  // Pass 1 — describe. Frames attached, free text out.
+  // Stage 2 — describe. Frames attached, free text out. This expensive pass
+  // is skipped entirely when placement evidence is unresolved.
   const description = (await runCompletion(sdk, modelId, {
     history: [{
       role: 'user',
@@ -856,14 +930,7 @@ async function scoreClip (frames, metadata = {}) {
   }
   console.log(`[qvac] clip description:\n${description}`)
 
-  // Pass 2 — placement. A visual question answered visually, one frame at a
-  // time: each tail frame is classified alone and the verdicts are voted, so
-  // a pre-shot frame with the ball still on the ground cannot decide the
-  // zone, and a left/right verdict must survive the mirror check.
-  const placement = await classifyPlacement(sdk, modelId, frames)
-  const { zone } = resolveZone(placement)
-
-  // Pass 3 — judge skill/difficulty/aesthetic from the description plus the
+  // Stage 3 — judge skill/difficulty/aesthetic from the description plus the
   // settled zone (no frames), grammar-constrained to the score schema.
   const judged = await runCompletion(sdk, modelId, {
     history: [{
@@ -879,14 +946,12 @@ async function scoreClip (frames, metadata = {}) {
   const parsed = parseScore(judged)
 
   return finalizeScore(parsed, placement, {
-    frameCount: frames.length,
-    // The extracted frame paths ride along (they persist in the temp dir), so
-    // a later head-to-head comparison can reuse the exact frames this score
-    // was judged on without re-extracting.
-    frames,
-    duration: metadata.duration || 0,
-    model: MODEL_INFO.id,
-    mock: false,
+    status: 'SCORED',
+    placementReport: {
+      status: placement.status,
+      evidence: placement.evidence,
+    },
+    ...baseMeta,
   })
 }
 
@@ -969,61 +1034,229 @@ function isWorkerDead (err) {
 }
 
 /**
- * Classify the goal-mouth cell by polling the tail frames one at a time.
+ * Resolve placement from repeated, structured evidence.
  *
- * Each of the last PLACEMENT_FRAME_COUNT frames is shown alone with the
- * placement prompt and the row/column answers are majority-voted, ties going
- * to the latest frame (where the ball is deepest into the goal). A left or
- * right column must then survive a mirror check: the deciding frame is
- * flipped horizontally and the question asked again — a model that truly
- * sees the ball must give the opposite side on the mirrored image. A side
- * that fails the check is not trusted, and the shot is scored through the
- * center column of its row rather than gambling on a guessed corner.
- *
- * @param {object} sdk - Loaded QVAC SDK module.
- * @param {string} modelId - Loaded model handle from getModel().
- * @param {string[]} frames - All extracted frame paths, in clip order.
- * @returns {Promise<{row: string, column: string, explanation: string, sideUnverified: boolean}>}
+ * The initial three tail frames must provide at least two usable observations
+ * and a strict row/column majority. A failed initial attempt gets one bounded
+ * visual recovery using additional frames chosen for the observed failure.
+ * A left/right result must also survive a mirror transformation. Nothing in
+ * this function converts uncertainty into a real goal zone.
  */
-async function classifyPlacement (sdk, modelId, frames) {
-  const tail = frames.slice(-PLACEMENT_FRAME_COUNT)
+// WHAT THIS DOES: Collects several independent observations, retries once
+//   with unused frames when needed, and returns CLEAR, RECOVERED, or
+//   UNRESOLVED with an evidence report.
+async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
+  const initialFrames = frames.slice(-PLACEMENT_FRAME_COUNT)
+  const initialVotes = await collectPlacementVotes(sdk, modelId, initialFrames)
+  const failedMirrorFrames = new Set()
+  const mirrorChecks = []
 
+  const initial = await assessWithMirror(
+    sdk,
+    modelId,
+    initialVotes,
+    failedMirrorFrames
+  )
+  if (initial.mirror) mirrorChecks.push(initial.mirror)
+
+  if (initial.assessment.ready) {
+    return resolvedPlacement('CLEAR', initialVotes, initial.assessment, {
+      initial: publicAssessment(initial.assessment),
+      recovery: null,
+      combined: publicAssessment(initial.assessment),
+      mirrorChecks,
+    })
+  }
+
+  const recoveryFrames = selectPlacementRecoveryFrames(
+    frames,
+    initialFrames,
+    initial.assessment.issues,
+    PLACEMENT_RECOVERY_FRAME_COUNT
+  )
+  const recoveryVotes = await collectPlacementVotes(sdk, modelId, recoveryFrames)
+  const frameOrder = new Map(frames.map((frame, index) => [frame, index]))
+  const combinedVotes = [...initialVotes, ...recoveryVotes]
+    .sort((a, b) => (frameOrder.get(a.frame) ?? 0) - (frameOrder.get(b.frame) ?? 0))
+
+  const combined = await assessWithMirror(
+    sdk,
+    modelId,
+    combinedVotes,
+    failedMirrorFrames
+  )
+  if (combined.mirror) mirrorChecks.push(combined.mirror)
+
+  const evidence = {
+    initial: publicAssessment(initial.assessment),
+    recovery: publicAssessment(assessPlacementEvidence(recoveryVotes)),
+    combined: publicAssessment(combined.assessment),
+    mirrorChecks,
+  }
+
+  if (combined.assessment.ready) {
+    return resolvedPlacement('RECOVERED', combinedVotes, combined.assessment, evidence)
+  }
+
+  return {
+    status: 'UNRESOLVED',
+    row: 'unclear',
+    column: 'unclear',
+    explanation: '',
+    issues: combined.assessment.issues,
+    evidence,
+    feedback: buildPlacementFeedback(
+      combined.assessment.issues,
+      combined.assessment.counts,
+      metadata
+    ),
+  }
+}
+
+async function collectPlacementVotes (sdk, modelId, frames) {
   const votes = []
-  for (const frame of tail) {
-    const vote = parseScore(await askPlacement(sdk, modelId, frame))
+  for (const frame of frames) {
+    const vote = await askPlacementWithRetry(sdk, modelId, frame)
     votes.push({ frame, ...vote })
-    console.log(`[qvac] placement vote ${path.basename(frame)}: row=${vote.row} column=${vote.column}`)
+    console.log(
+      `[qvac] placement evidence ${path.basename(frame)}: ` +
+      `ball=${vote.ball_visibility} goal=${vote.goal_visibility} ` +
+      `relation=${vote.ball_goal_relation} row=${vote.row} column=${vote.column}`
+    )
   }
+  return votes
+}
 
-  const row = majority(votes.map((v) => v.row), ['top', 'mid', 'bottom'])
-  let column = majority(votes.map((v) => v.column), ['left', 'center', 'right'])
-  let sideUnverified = false
-
-  if (row !== 'unclear' && (column === 'left' || column === 'right')) {
-    // Mirror check, run on the latest frame that voted for the winning side.
-    const decider = [...votes].reverse().find((v) => v.column === column)
-    const mirrored = parseScore(await askPlacement(sdk, modelId, await flipFrame(decider.frame)))
-    const expected = column === 'left' ? 'right' : 'left'
-    console.log(`[qvac] placement mirror check: column=${mirrored.column} (expected ${expected})`)
-    if (mirrored.column !== expected) {
-      column = 'center'
-      sideUnverified = true
+// Retry a technical/model-output failure once against the exact same frame.
+// If both attempts fail, the error propagates as a system failure; it is never
+// turned into a claim about clip quality.
+async function askPlacementWithRetry (sdk, modelId, frame) {
+  let lastError
+  for (let attempt = 1; attempt <= PLACEMENT_CALL_ATTEMPTS; attempt++) {
+    try {
+      return parseScore(await askPlacement(sdk, modelId, frame))
+    } catch (err) {
+      lastError = err
+      console.warn(
+        `[qvac] placement call failed for ${path.basename(frame)} ` +
+        `(attempt ${attempt}/${PLACEMENT_CALL_ATTEMPTS}): ${err.message}`
+      )
     }
-  } else if (row !== 'unclear' && column === 'unclear') {
-    // Height is known but the side is not — score through the center column
-    // instead of dropping a visible goal all the way to "unclear".
-    column = 'center'
-    sideUnverified = true
   }
 
-  // Prefer the explanation of a vote that matches the final verdict; fall
-  // back to the latest vote that agreed on the row, then to the last vote.
-  const chosen =
-    [...votes].reverse().find((v) => v.row === row && v.column === column) ||
-    [...votes].reverse().find((v) => v.row === row) ||
-    votes[votes.length - 1]
+  const error = new Error(
+    `Placement analysis failed after ${PLACEMENT_CALL_ATTEMPTS} attempts: ` +
+    `${lastError?.message || 'unknown model error'}`
+  )
+  error.code = 'PLACEMENT_ANALYSIS_ERROR'
+  throw error
+}
 
-  return { row, column, explanation: chosen?.explanation ?? '', sideUnverified }
+async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
+  const assessment = assessPlacementEvidence(votes)
+  if (!assessment.ready) return { assessment, mirror: null }
+
+  const mirror = await verifyPlacementMirror(
+    sdk,
+    modelId,
+    votes,
+    assessment,
+    failedMirrorFrames
+  )
+  if (mirror.passed) return { assessment, mirror }
+
+  if (mirror.frame) failedMirrorFrames.add(mirror.frame)
+  return {
+    assessment: {
+      ...assessment,
+      ready: false,
+      row: 'unclear',
+      column: 'unclear',
+      issues: [PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT],
+      mirrorMismatch: true,
+    },
+    mirror,
+  }
+}
+
+async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedFrames) {
+  if (assessment.column === 'center') {
+    return { required: false, passed: true }
+  }
+
+  const decider = [...votes].reverse().find((vote) =>
+    vote.row === assessment.row &&
+    vote.column === assessment.column &&
+    !excludedFrames.has(vote.frame)
+  )
+  if (!decider) {
+    return { required: true, passed: false, frame: null, reason: 'no_unused_decider' }
+  }
+
+  const mirrored = await askPlacementWithRetry(
+    sdk,
+    modelId,
+    await flipFrame(decider.frame)
+  )
+  const expectedColumn = assessment.column === 'left' ? 'right' : 'left'
+  const passed =
+    mirrored.ball_visibility === 'visible' &&
+    mirrored.goal_visibility === 'full' &&
+    mirrored.ball_goal_relation === 'in_or_entering' &&
+    mirrored.row === assessment.row &&
+    mirrored.column === expectedColumn
+
+  console.log(
+    `[qvac] placement mirror check: row=${mirrored.row} ` +
+    `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})`
+  )
+
+  return {
+    required: true,
+    passed,
+    frame: decider.frame,
+    expectedColumn,
+    observedColumn: mirrored.column,
+    observedRow: mirrored.row,
+  }
+}
+
+function resolvedPlacement (status, votes, assessment, evidence) {
+  const chosen = [...votes].reverse().find((vote) =>
+    vote.ball_visibility === 'visible' &&
+    vote.goal_visibility === 'full' &&
+    vote.ball_goal_relation === 'in_or_entering' &&
+    vote.row === assessment.row &&
+    vote.column === assessment.column
+  )
+  return {
+    status,
+    row: assessment.row,
+    column: assessment.column,
+    explanation: chosen?.explanation ?? '',
+    issues: [],
+    evidence,
+  }
+}
+
+function publicAssessment (assessment) {
+  return {
+    ready: Boolean(assessment?.ready),
+    row: assessment?.row || 'unclear',
+    column: assessment?.column || 'unclear',
+    issues: Array.isArray(assessment?.issues) ? assessment.issues : [],
+    counts: assessment?.counts || {
+      checked: 0,
+      ballVisible: 0,
+      goalFull: 0,
+      ballAtGoal: 0,
+      usable: 0,
+      rowAgreement: 0,
+      columnAgreement: 0,
+    },
+    requiredAgreement: Number(assessment?.requiredAgreement) || 2,
+    mirrorMismatch: Boolean(assessment?.mirrorMismatch),
+  }
 }
 
 // One single-frame placement question, grammar-locked to the row/column enums.
@@ -1039,24 +1272,6 @@ function askPlacement (sdk, modelId, framePath) {
       json_schema: { name: 'placement_zone', schema: placementField },
     },
   })
-}
-
-// Majority vote counting only the allowed (clear) values; ties resolve to the
-// value backed by the latest frame. 'unclear' when no frame answered clearly.
-function majority (values, allowed) {
-  const counts = new Map()
-  for (const v of values) {
-    if (allowed.includes(v)) counts.set(v, (counts.get(v) || 0) + 1)
-  }
-  let best = 'unclear'
-  let bestCount = 0
-  for (const v of [...values].reverse()) {
-    if (counts.has(v) && counts.get(v) > bestCount) {
-      best = v
-      bestCount = counts.get(v)
-    }
-  }
-  return best
 }
 
 // Horizontally mirrored copy of a frame for the chirality check, written next
@@ -1086,6 +1301,9 @@ async function flipFrame (framePath) {
  * @returns {object} { winner: 'A'|'B'|'tie', margin, totalA, totalB, breakdown }
  */
 function compareClips (clipA, clipB) {
+  if (!hasResolvedPlacement(clipA) || !hasResolvedPlacement(clipB)) {
+    throw new Error('Clip comparison requires resolved placement for both clips')
+  }
   const totalA = clipA.total ?? sumScores(clipA.scores)
   const totalB = clipB.total ?? sumScores(clipB.scores)
   const margin = Math.abs(totalA - totalB)
@@ -1174,11 +1392,20 @@ const DIMENSION_WIN_PHRASES = {
  */
 function canCompareHeadToHead (clipA, clipB) {
   return [clipA, clipB].every((clip) =>
+    hasResolvedPlacement(clip) &&
     Array.isArray(clip?.frames) &&
     clip.frames.length > 0 &&
-    clip.frames.every((p) => typeof p === 'string' && fs.existsSync(p)) &&
-    typeof clip?.scores?.placement?.zone === 'string'
+    clip.frames.every((p) => typeof p === 'string' && fs.existsSync(p))
   )
+}
+
+// A failed readiness report can never masquerade as a scored clip. Legacy
+// score objects without the new top-level status remain valid only when they
+// still carry a real zone from the fixed table.
+function hasResolvedPlacement (clip) {
+  const zone = clip?.scores?.placement?.zone
+  return clip?.status !== 'NEEDS_BETTER_CLIP' &&
+    Object.prototype.hasOwnProperty.call(PLACEMENT_ZONE_SCORES, zone)
 }
 
 /**
@@ -1240,6 +1467,9 @@ function selectComparisonFrames (frames, count = COMPARE_FRAME_COUNT) {
  *     totals: {a, b}, frameCounts: {a, b}, model, mock }
  */
 async function compareHeadToHead (clipA, clipB, opts = {}) {
+  if (!hasResolvedPlacement(clipA) || !hasResolvedPlacement(clipB)) {
+    throw new Error('Head-to-head judging requires resolved placement for both clips')
+  }
   const framesA = opts.framesA || clipA?.frames
   const framesB = opts.framesB || clipB?.frames
   if (!Array.isArray(framesA) || framesA.length === 0 ||
@@ -1403,10 +1633,14 @@ function normalizeAnswer (dimension, answer) {
 // composed from the zones' plain-words phrases, so it is deterministic and
 // can never leak internal zone keys or narrate the grid.
 function placementDimension (clipA, clipB) {
-  const zoneA = clipA?.scores?.placement?.zone || UNCLEAR_ZONE
-  const zoneB = clipB?.scores?.placement?.zone || UNCLEAR_ZONE
-  const scoreA = PLACEMENT_ZONE_SCORES[zoneA] ?? PLACEMENT_ZONE_SCORES[UNCLEAR_ZONE]
-  const scoreB = PLACEMENT_ZONE_SCORES[zoneB] ?? PLACEMENT_ZONE_SCORES[UNCLEAR_ZONE]
+  const zoneA = clipA?.scores?.placement?.zone
+  const zoneB = clipB?.scores?.placement?.zone
+  if (!Object.prototype.hasOwnProperty.call(PLACEMENT_ZONE_SCORES, zoneA) ||
+      !Object.prototype.hasOwnProperty.call(PLACEMENT_ZONE_SCORES, zoneB)) {
+    throw new Error('Placement comparison requires resolved evidence for both clips')
+  }
+  const scoreA = PLACEMENT_ZONE_SCORES[zoneA]
+  const scoreB = PLACEMENT_ZONE_SCORES[zoneB]
 
   let winner = 'equal'
   let reason
@@ -1545,14 +1779,13 @@ function parseScore (content) {
   }
 }
 
-// Compose the zone key from the two vision commitments. Any 'unclear' row or
-// column (or anything that somehow slipped past the enum grammar) fails the
-// table lookup and maps to the lowest-value cell, same treatment as before
-// for unknown placement.
+// Compose the zone key from two resolved vision commitments. An unclear or
+// invalid pair stays null; uncertainty is never converted to a real cell.
+// WHAT THIS DOES: Sticks row and column together only when both are valid.
 function resolveZone (placement) {
   const composed = `${placement?.row}_${placement?.column}`
   const unclear = PLACEMENT_ZONE_SCORES[composed] === undefined
-  return { zone: unclear ? UNCLEAR_ZONE : composed, unclear }
+  return { zone: unclear ? null : composed, unclear }
 }
 
 // Normalize the raw parsed object into our canonical, clamped shape and add the
@@ -1571,16 +1804,22 @@ function finalizeScore (parsed, placement, meta) {
   }
 
   const { zone, unclear } = resolveZone(placement)
+  if (unclear || !zone) {
+    throw new Error('finalizeScore refuses to score unresolved placement evidence')
+  }
   // The model's own words are shown only when the verdict was clear and any
-  // left/right call survived the mirror check. Otherwise the shown text is
-  // composed from the final zone — players get a plain statement of where
-  // the ball went, never narration about unverified sides or defaulted
-  // cells.
+  // left/right call survived the mirror check. If it returned no natural
+  // explanation, compose one from the already-verified zone.
   let explanation = String(placement?.explanation ?? '').trim()
-  if (unclear || placement?.sideUnverified || !explanation) {
+  if (!explanation) {
     explanation = `The ball went ${PLACEMENT_ZONE_PHRASES[zone]}.`
   }
-  scores.placement = { score: PLACEMENT_ZONE_SCORES[zone], zone, explanation }
+  scores.placement = {
+    score: PLACEMENT_ZONE_SCORES[zone],
+    zone,
+    explanation,
+    evidenceStatus: placement.status,
+  }
 
   warnOnDuplicateExplanations(scores)
 
@@ -1648,7 +1887,9 @@ function mockScore (frames, metadata) {
   const mockZone = PLACEMENT_ZONES[seed % PLACEMENT_ZONES.length]
   scores.placement.zone = mockZone
   scores.placement.score = PLACEMENT_ZONE_SCORES[mockZone]
+  scores.placement.evidenceStatus = 'MOCK'
   return {
+    status: 'SCORED',
     scores,
     total: sumScores(scores),
     frameCount: frames.length,
@@ -1656,6 +1897,7 @@ function mockScore (frames, metadata) {
     duration: metadata.duration || 0,
     model: 'mock',
     mock: true,
+    placementReport: { status: 'MOCK', evidence: null },
   }
 }
 
@@ -1679,6 +1921,7 @@ module.exports = {
   compareClips,
   compareHeadToHead,
   canCompareHeadToHead,
+  hasResolvedPlacement,
   selectComparisonFrames,
   finalizeScore,
 }

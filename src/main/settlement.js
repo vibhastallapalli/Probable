@@ -7,12 +7,17 @@ const scoring = require('./scoring')
  * Decide the match winner and, if there is one and the match wallet is
  * funded, release the full USDT balance to that winner.
  *
- * The winner comes from the head-to-head verdict — both clips judged side by
- * side (scoring.compareHeadToHead) — not from comparing two solo totals.
- * The caller normally passes the verdict it already computed and showed to
- * the players, so settlement never re-runs the model; when no verdict is
- * passed, one is computed here, falling back to the totals comparison only
- * for legacy score objects that carry no frame paths.
+ * Two ways to pick the winner, chosen by the caller:
+ *   - Head-to-head (opts.useHeadToHead, the default): both clips judged side
+ *     by side (scoring.compareHeadToHead). The caller normally passes the
+ *     verdict it already computed and showed to the players, so settlement
+ *     never re-runs the model; when no verdict is passed, one is computed
+ *     here, falling back to the totals comparison for legacy score objects
+ *     that carry no frame paths.
+ *   - Raw scores (opts.useHeadToHead === false): the winner is simply the
+ *     higher of the two solo scorecard totals (scoring.compareClips). The
+ *     model is never invoked and no verdict is needed — the escrow is dumped
+ *     to whichever clip scored higher.
  *
  * Returns a single result object whose `outcome` is one of:
  *   'unfunded'        — match wallet has no USDT yet; nothing was touched
@@ -26,9 +31,11 @@ const scoring = require('./scoring')
  * @param {string} addressA  - EVM address of participant A
  * @param {string} addressB  - EVM address of participant B
  * @param {object} [verdict] - Precomputed compareHeadToHead() verdict
+ * @param {object} [opts]    - { useHeadToHead?: boolean } — default true
  * @returns {Promise<object>}
  */
-async function settleMatch (matchId, clipA, clipB, addressA, addressB, verdict) {
+async function settleMatch (matchId, clipA, clipB, addressA, addressB, verdict, opts = {}) {
+  const { useHeadToHead = true } = opts
   const status = await escrow.getEscrowStatus(matchId)
 
   // A settled escrow has already paid out. Never move money a second time —
@@ -52,15 +59,22 @@ async function settleMatch (matchId, clipA, clipB, addressA, addressB, verdict) 
     }
   }
 
-  // Winner source: the head-to-head verdict. The totals comparison is kept
-  // alongside purely as supporting detail in the returned result.
-  const validVerdict = verdict && ['A', 'B', 'tie'].includes(verdict.winner)
-  const headToHead = validVerdict
-    ? verdict
-    : scoring.canCompareHeadToHead(clipA, clipB)
-      ? await scoring.compareHeadToHead(clipA, clipB)
-      : null
+  // Totals comparison is always computed — it is the raw-score winner and,
+  // in head-to-head mode, the supporting detail plus the legacy fallback.
   const detail = scoring.compareClips(clipA, clipB)
+
+  // Winner source depends on the mode. Head-to-head (default) reads the
+  // side-by-side verdict; raw-score mode skips the model entirely and pays
+  // out on the higher scorecard total.
+  let headToHead = null
+  if (useHeadToHead) {
+    const validVerdict = verdict && ['A', 'B', 'tie'].includes(verdict.winner)
+    headToHead = validVerdict
+      ? verdict
+      : scoring.canCompareHeadToHead(clipA, clipB)
+        ? await scoring.compareHeadToHead(clipA, clipB)
+        : null
+  }
   const winner = headToHead ? headToHead.winner : detail.winner
 
   if (winner === 'tie') {

@@ -1,6 +1,6 @@
 'use strict'
 
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('probable', {
   appName: 'Probable',
@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('probable', {
 
   clip: {
     pickVideo: () => ipcRenderer.invoke('clip:pick-video'),
+    // Absolute path of a dropped File. Electron 32 removed File.path, so the
+    // renderer can no longer read it directly — this is the sanctioned route.
+    pathForFile: (file) => webUtils.getPathForFile(file),
     probe: (videoPath) => ipcRenderer.invoke('clip:probe', videoPath),
     prepareModel: () => ipcRenderer.invoke('clip:prepare-model'),
     score: (videoPath) => ipcRenderer.invoke('clip:score', videoPath),
@@ -47,8 +50,8 @@ contextBridge.exposeInMainWorld('probable', {
   match: {
     compare: (clipA, clipB) =>
       ipcRenderer.invoke('match:compare', clipA, clipB),
-    settle: (matchId, clipA, clipB, addressA, addressB, verdict) =>
-      ipcRenderer.invoke('match:settle', matchId, clipA, clipB, addressA, addressB, verdict),
+    settle: (matchId, clipA, clipB, addressA, addressB, verdict, opts) =>
+      ipcRenderer.invoke('match:settle', matchId, clipA, clipB, addressA, addressB, verdict, opts),
   },
 
   predict: {

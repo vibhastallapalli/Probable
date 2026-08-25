@@ -2,6 +2,12 @@ import React, { useState, useEffect, useRef } from 'react'
 
 const STAKE = 100
 
+// Highest total a clip can score: skill + difficulty + aesthetic at 10 each,
+// plus placement at 10 counted DOUBLE. Mirrors MAX_TOTAL in src/main/scoring.js
+// — the renderer can't require main-process modules across the IPC boundary,
+// so the two have to be changed together.
+const MAX_TOTAL = 50
+
 // The four categories of FIFA's Puskas Award rubric [the criteria FIFA uses
 // to judge its own goal of the year]. Each label pairs plain English with the
 // meaning in brackets, and `key` matches the fields in the score JSON.
@@ -9,18 +15,20 @@ const RUBRIC = [
   { key: 'skill', label: 'Skill', gloss: 'clean technique and ball control' },
   { key: 'difficulty', label: 'Difficulty', gloss: 'how hard the play was to pull off' },
   { key: 'aesthetic', label: 'Aesthetic', gloss: 'how spectacular it looks' },
-  { key: 'placement', label: 'Placement', gloss: 'where in the goal the shot lands' },
+  { key: 'placement', label: 'Placement', gloss: 'where in the goal the shot lands — counts double' },
 ]
 
 // The four head-to-head dimensions the match verdict is decided on, in
 // display order. Keys match the `dimensions` field of the verdict; distance,
 // speed, and technique come from the side-by-side comparison call, placement
-// from the two clips' zone verdicts.
+// from the two clips' zone verdicts. `points` mirrors COMPARE_DIMENSION_WEIGHTS
+// in src/main/scoring.js — placement pays double because it is the hardest
+// thing to actually do and the one the model reads most reliably.
 const VERDICT_DIMENSIONS = [
-  { key: 'distance', label: 'Distance', gloss: 'who shot from further out' },
-  { key: 'speed', label: 'Shot speed', gloss: 'whose shot flew faster' },
-  { key: 'technique', label: 'Strike', gloss: 'who caught it cleaner' },
-  { key: 'placement', label: 'Placement', gloss: 'who found the better spot' },
+  { key: 'distance', label: 'Distance', gloss: 'who shot from further out', points: 1 },
+  { key: 'speed', label: 'Shot speed', gloss: 'whose shot flew faster', points: 1 },
+  { key: 'technique', label: 'Strike', gloss: 'who caught it cleaner', points: 1 },
+  { key: 'placement', label: 'Placement', gloss: 'who found the better spot', points: 2 },
 ]
 
 // Plain-words labels for the 9 goal-mouth zones the placement criterion is
@@ -42,6 +50,25 @@ const ZONE_LABELS = {
 // Fallback so the status badge renders even before the main process replies.
 const DEFAULT_MODEL_INFO = { name: 'SmolVLM2 2.2B', id: '', runtime: 'QVAC' }
 
+// A match is two sides, and everything about one side lives in its slot: the
+// video that was dropped on it, that video's probe metadata, the scorecard
+// once it has been judged, and what the slot is doing right now.
+const SIDES = ['A', 'B']
+
+function emptySlot () {
+  return { path: null, probe: null, score: null, status: 'idle', error: null, drag: false }
+}
+
+// Status pill per slot state. 'idle' deliberately has no pill — a loaded but
+// unjudged clip should look calm, not pending.
+const SLOT_STATUS = {
+  queued: { text: 'queued', cls: 'pill' },
+  preparing: { text: 'loading model', cls: 'pill' },
+  scoring: { text: 'judging…', cls: 'pill pill--warn' },
+  done: { text: '✓ judged', cls: 'pill pill--ok' },
+  failed: { text: 'failed', cls: 'pill pill--bad' },
+}
+
 function isValidAddress (val) {
   return typeof val === 'string' && /^0x[0-9a-fA-F]{40}$/.test(val)
 }
@@ -49,6 +76,39 @@ function isValidAddress (val) {
 // One decimal is plenty for a frame rate readout [24, 25, or 29.97 style values].
 function roundFps (fps) {
   return Math.round(fps * 10) / 10
+}
+
+// Just the file name of a scored clip, so the assigned A/B slots say WHICH
+// video is in them instead of only a number. Injected test scores carry no
+// videoPath, hence the fallback.
+function clipFileName (score) {
+  const p = score?.videoPath
+  if (typeof p !== 'string') return 'injected score'
+  return p.split(/[\\/]/).pop()
+}
+
+// Dev/test shortcut — a faithfully shaped scoreClip() result with a fixed
+// total, so the settlement flow can be driven end to end without waiting on a
+// real on-device scoring run each iteration. Carries no frames (head-to-head
+// can't run on it) and is flagged mock:true so nothing mistakes it for a real
+// model score. The four field scores are passed in and totalled the same way
+// sumScores() does in the main process — placement counted double.
+function makeTestScore ({ skill, difficulty, aesthetic, placement, zone }) {
+  const why = 'Injected test score — not a real model judgment.'
+  return {
+    scores: {
+      skill: { score: skill, explanation: why },
+      difficulty: { score: difficulty, explanation: why },
+      aesthetic: { score: aesthetic, explanation: why },
+      placement: { score: placement, explanation: why, zone },
+    },
+    total: skill + difficulty + aesthetic + 2 * placement,
+    frameCount: 0,
+    frames: [],
+    duration: 0,
+    model: 'test-injected',
+    mock: true,
+  }
 }
 
 // Status → pill styling. Green for paid-out terminal states, amber for
@@ -82,6 +142,97 @@ function StatusBadge ({ modelInfo, mockMode }) {
   )
 }
 
+/**
+ * One side's clip slot — drop a video on it, or click to browse.
+ *
+ * It never shows a score. That is the whole point: if the two totals are on
+ * screen the head-to-head has nothing left to reveal, so the numbers stay
+ * behind the "See individual results" disclosure below the slots.
+ */
+function ClipSlot ({ side, slot, busy, onPick, onDrop, onDrag }) {
+  const status = SLOT_STATUS[slot.status]
+  // dragleave also fires when the cursor crosses onto a child element, which
+  // would strobe the highlight — only clear it when the cursor really left.
+  const dragProps = {
+    onDragOver: (e) => { e.preventDefault(); if (!slot.drag) onDrag(side, true) },
+    onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) onDrag(side, false) },
+    onDrop: (e) => onDrop(side, e),
+  }
+  const cls = `slot slot--${side.toLowerCase()}${slot.drag ? ' slot--drag' : ''}`
+
+  if (!slot.path) {
+    return (
+      <button type="button" className={`${cls} slot--empty`} onClick={() => onPick(side)} disabled={busy} {...dragProps}>
+        <span className="slot__side">Player {side}</span>
+        <span className="slot__drop">
+          <span className="slot__icon">↧</span>
+          drop a goal clip here
+          <small>or click to browse</small>
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    <div className={cls} {...dragProps}>
+      <div className="slot__top">
+        <span className="slot__side">Player {side}</span>
+        {status && <span className={status.cls}>{status.text}</span>}
+      </div>
+      <div className="slot__file" title={slot.path}>{slot.path.split(/[\\/]/).pop()}</div>
+      <div className="slot__meta">
+        {[
+          slot.probe && `${roundFps(slot.probe.fps)} fps · ${slot.probe.duration.toFixed(1)}s`,
+          slot.score?.frameCount > 0 && `${slot.score.frameCount} frames judged`,
+          !slot.probe && !slot.score && 'reading clip…',
+        ].filter(Boolean).join(' · ')}
+      </div>
+      {slot.probe?.lowFps && (
+        <div className="warn-note">⚠ under {slot.probe.minFps} fps — judging may be less reliable</div>
+      )}
+      {slot.error && <div className="slot__err">{slot.error}</div>}
+      <button className="btn btn--ghost btn--sm" onClick={() => onPick(side)} disabled={busy}>Replace clip</button>
+    </div>
+  )
+}
+
+/**
+ * One clip's full Puskas scorecard. Only ever rendered inside the collapsed
+ * disclosure, so the totals stay out of sight until someone asks for them.
+ */
+function Scorecard ({ side, score }) {
+  if (!score) {
+    return (
+      <div className="sheet">
+        <div className="sheet__head"><span>Player {side}</span></div>
+        <div className="micro">not judged yet</div>
+      </div>
+    )
+  }
+  return (
+    <div className={`sheet sheet--${side.toLowerCase()}`}>
+      <div className="sheet__head">
+        <span>Player {side}</span>
+        <span className="score-big">{score.total} <small>/ {MAX_TOTAL}</small></span>
+      </div>
+      <div className="sheet__file">{clipFileName(score)}{score.mock ? ' · mock' : ''}</div>
+      {RUBRIC.map(({ key, label, gloss }) => (
+        <div key={key} className="card">
+          <div>
+            <span className="card__title">{label}</span>{' '}
+            <span className="card__gloss">[{gloss}]</span>{' '}
+            <span className="card__val">— {score.scores[key].score} of 10</span>
+            {key === 'placement' && score.scores[key].zone && (
+              <span className="zone"> · zone: {ZONE_LABELS[score.scores[key].zone] ?? score.scores[key].zone}</span>
+            )}
+          </div>
+          <div className="card__why">Why: {score.scores[key].explanation}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function App () {
   const [tab, setTab] = useState('judge')
   const [address, setAddress] = useState(null)
@@ -96,17 +247,25 @@ export default function App () {
 
   const [loadId, setLoadId] = useState('')
 
-  const [videoPath, setVideoPath] = useState(null)
-  const [clipProbe, setClipProbe] = useState(null)
   const [modelInfo, setModelInfo] = useState(DEFAULT_MODEL_INFO)
-  const [preparingModel, setPreparingModel] = useState(false)
+  // The whole match, in two objects. Held in memory only — reloading the app
+  // clears both slots and you start the match over.
+  const [slots, setSlots] = useState({ A: emptySlot(), B: emptySlot() })
   const [scoring, setScoring] = useState(false)
-  const [clipScore, setClipScore] = useState(null)
-  const [clipScoreA, setClipScoreA] = useState(null)
-  const [clipScoreB, setClipScoreB] = useState(null)
   const [verdict, setVerdict] = useState(null)
   const [comparing, setComparing] = useState(false)
+  // On by default: judging the two clips against each other is the more
+  // reliable call — the model separates two shots it can see side by side far
+  // better than it assigns absolute ratings to each one alone. Untick to fall
+  // back to paying out on the higher solo scorecard total.
+  const [useHeadToHead, setUseHeadToHead] = useState(true)
   const [settleResult, setSettleResult] = useState(null)
+
+  // The rest of the app talks in scorecards, not slots.
+  const clipScoreA = slots.A.score
+  const clipScoreB = slots.B.score
+  // Sides holding a clip that still needs judging, in A-then-B order.
+  const pending = SIDES.filter((s) => slots[s].path && !slots[s].score)
 
   const emit = (msg) => setLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev])
 
@@ -237,33 +396,51 @@ export default function App () {
     }
   }
 
-  async function handlePickVideo () {
+  function patchSlot (side, patch) {
+    setSlots((prev) => ({ ...prev, [side]: { ...prev[side], ...patch } }))
+  }
+
+  // Load a video into one side's slot, from the file dialog or from a drop.
+  // Any verdict on screen is stale the instant a clip changes.
+  async function handlePickFor (side, droppedPath) {
     try {
-      const picked = await window.probable.clip.pickVideo()
-      if (!picked) { emit('Video pick cancelled'); return }
-      setVideoPath(picked)
-      setClipScore(null)
-      setClipProbe(null)
-      emit(`Picked clip: ${picked}`)
+      const picked = droppedPath || await window.probable.clip.pickVideo()
+      if (!picked) return
+      patchSlot(side, { ...emptySlot(), path: picked })
+      setVerdict(null)
+      emit(`Clip ${side}: ${picked.split(/[\\/]/).pop()}`)
       try {
-        const probe = await window.probable.clip.probe(picked)
-        setClipProbe(probe)
-        if (probe?.lowFps) {
-          emit(`Clip is ${roundFps(probe.fps)} fps, under ${probe.minFps} fps, scoring may be less reliable`)
-        }
-      } catch { /* the probe is advisory only, it never blocks picking or scoring */ }
+        patchSlot(side, { probe: await window.probable.clip.probe(picked) })
+      } catch { /* the probe is advisory only, it never blocks judging */ }
     } catch (err) {
       emit(`Pick failed: ${err.message}`)
     }
   }
 
-  async function handleScoreClip () {
-    if (!videoPath) return
+  function handleDropOn (side, e) {
+    e.preventDefault()
+    patchSlot(side, { drag: false })
+    if (scoring) return
+    const file = e.dataTransfer?.files?.[0]
+    if (!file) return
+    const dropped = window.probable.clip.pathForFile(file)
+    if (dropped) handlePickFor(side, dropped)
+    else emit('Could not read the dropped file’s path — use the browse dialog instead')
+  }
+
+  // Judge whichever slots still need it. The clips run back to back, not at
+  // the same time: there is one local model worker holding one context, and
+  // two scoreClip calls in flight would interleave their passes through it.
+  async function handleScoreClips () {
+    if (scoring || pending.length === 0) return
+    const todo = [...pending]
     setScoring(true)
+    setVerdict(null)
+    todo.forEach((s) => patchSlot(s, { status: 'queued', error: null }))
     try {
-      // One-time model download / warm-up first, so scoring never races the
+      // One-time model download / warm-up first, so judging never races the
       // worker init timeout on first run. A no-op once the model is loaded.
-      setPreparingModel(true)
+      patchSlot(todo[0], { status: 'preparing' })
       emit('Preparing on-device model… first run downloads the weights, this can take a few minutes')
       const prep = await window.probable.clip.prepareModel()
       if (!prep.alreadyLoaded && !prep.mock) emit(`Model ready: ${prep.model}`)
@@ -272,16 +449,26 @@ export default function App () {
       window.probable.scoring.modelInfo()
         .then((info) => { if (info) setModelInfo(info) })
         .catch(() => { /* badge keeps its last known value */ })
-      setPreparingModel(false)
 
-      emit('Scoring clip locally via QVAC…')
-      const result = await window.probable.clip.score(videoPath)
-      setClipScore(result)
-      emit(`Scored: total ${result.total} of 40 from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
+      for (const side of todo) {
+        patchSlot(side, { status: 'scoring' })
+        emit(`Judging clip ${side} on this device via QVAC…`)
+        try {
+          const result = await window.probable.clip.score(slots[side].path)
+          patchSlot(side, { score: result, status: 'done' })
+          // No total in the log on purpose — the Log panel is on screen, and
+          // leaking the two numbers there defeats the hidden scorecards.
+          emit(`Clip ${side} judged from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
+        } catch (err) {
+          // One clip failing must not abandon the other.
+          patchSlot(side, { status: 'failed', error: err.message })
+          emit(`Clip ${side} failed: ${err.message}`)
+        }
+      }
     } catch (err) {
-      emit(`Score failed: ${err.message}`)
+      emit(`Model prepare failed: ${err.message}`)
+      todo.forEach((s) => patchSlot(s, { status: 'failed', error: err.message }))
     } finally {
-      setPreparingModel(false)
       setScoring(false)
     }
   }
@@ -308,9 +495,14 @@ export default function App () {
 
   async function handleSettle () {
     try {
-      // Pass the verdict already shown to the players, so settlement pays out
-      // exactly the result they saw and never re-runs the model.
-      const result = await window.probable.match.settle(escrowId, clipScoreA, clipScoreB, playerA, playerB, verdict)
+      // Head-to-head mode pays out the verdict already shown to the players
+      // (never re-running the model); raw-score mode skips the verdict entirely
+      // and dumps the escrow to whichever clip scored the higher total.
+      const result = await window.probable.match.settle(
+        escrowId, clipScoreA, clipScoreB, playerA, playerB,
+        useHeadToHead ? verdict : null,
+        { useHeadToHead }
+      )
       setSettleResult(result)
       if (result.outcome === 'unfunded') {
         emit(`Settle: unfunded, match wallet balance is ${result.balance} USDT`)
@@ -332,13 +524,38 @@ export default function App () {
     }
   }
 
+  // Dev/test shortcut: skip the slow on-device scoring passes and drop in two
+  // ready-made scorecards so the escrow → settle flow can be exercised in one
+  // click. Forces raw-score mode off head-to-head, since injected clips carry
+  // no frames to judge side by side; raw scores pay out to the higher total,
+  // so Player A wins on the extra skill point.
+  function handleInjectTestScores () {
+    const a = makeTestScore({ skill: 8, difficulty: 7, aesthetic: 7, placement: 6, zone: 'bottom_left' })
+    const b = makeTestScore({ skill: 7, difficulty: 7, aesthetic: 7, placement: 6, zone: 'bottom_right' })
+    // Give the slots a path so they render as filled — these carry no real
+    // video, hence no probe metadata and no frames to judge head to head.
+    setSlots({
+      A: { ...emptySlot(), path: 'injected test score', score: a, status: 'done' },
+      B: { ...emptySlot(), path: 'injected test score', score: b, status: 'done' },
+    })
+    setVerdict(null)
+    setUseHeadToHead(false)
+    emit(`Test scores injected — Clip A ${a.total} of ${MAX_TOTAL}, Clip B ${b.total} of ${MAX_TOTAL} (mock, raw-score mode)`)
+  }
+
   // Terminal state once the payout has gone out; disables further release/settle.
   // Accepts the legacy 'released' status so older records stay locked too.
   const settled = escrowRecord?.status === 'settled' || escrowRecord?.status === 'released'
 
+  // Raw-score winner preview for the settlement panel — who the higher total
+  // pays out to when head-to-head is off. Mirrors compareClips in the main process.
+  const rawWinner = clipScoreA && clipScoreB
+    ? (clipScoreA.total > clipScoreB.total ? 'A' : clipScoreB.total > clipScoreA.total ? 'B' : 'tie')
+    : null
+
   return (
     <div className="app">
-      <StatusBadge modelInfo={modelInfo} mockMode={clipScore?.mock === true} />
+      <StatusBadge modelInfo={modelInfo} mockMode={clipScoreA?.mock === true || clipScoreB?.mock === true} />
       <div className="container">
         <header className="topbar">
           <span className="wordmark">Probable</span>
@@ -549,71 +766,85 @@ export default function App () {
         )}
 
         <section className="panel">
-          <div className="panel__head"><span className="panel__title">Clip scoring [judged on this device via QVAC]</span></div>
+          <div className="panel__head">
+            <span className="panel__title">Match clips</span>
+            <span className="micro">judged on this device via QVAC</span>
+          </div>
           <p className="hint">
-            Scored on the four FIFA Puskas Award criteria [the rubric FIFA uses for its own goal of the year]
+            Drop a goal clip on each side, or click a slot to browse. Both are judged on the four
+            FIFA Puskas Award criteria [the rubric FIFA uses for its own goal of the year].
+            The scorecards stay hidden until you ask for them, so the head-to-head is the reveal.
           </p>
-          <div className="kv"><span className="kv__k">Clip</span><span className="kv__v">{videoPath ?? '(none selected)'}</span></div>
-          {clipProbe?.lowFps && (
-            <p className="warn-note">
-              ⚠ This clip is {roundFps(clipProbe.fps)} fps, under {clipProbe.minFps} fps, so scoring may be less reliable
-            </p>
-          )}
-          <div className="bar">
-            <button className="btn" onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
-            <button className="btn btn--primary" onClick={handleScoreClip} disabled={!videoPath || scoring}>
-              {scoring ? (preparingModel ? 'Preparing model…' : 'Scoring…') : 'Run scoreClip'}
-            </button>
+
+          <div className="slots">
+            {SIDES.map((side) => (
+              <ClipSlot
+                key={side}
+                side={side}
+                slot={slots[side]}
+                busy={scoring}
+                onPick={handlePickFor}
+                onDrop={handleDropOn}
+                onDrag={(s, on) => patchSlot(s, { drag: on })}
+              />
+            ))}
           </div>
 
-          {clipScore && (
-            <div style={{ marginTop: 14 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-                <span className="score-big">{clipScore.total} <small>/ 40</small></span>
-                <span className="pill">{clipScore.model}</span>
-                {clipScore.mock && <span className="pill pill--warn">mock</span>}
-                <span className="micro">{clipScore.frameCount} frames</span>
+          <div className="bar">
+            <button className="btn btn--primary" onClick={handleScoreClips} disabled={scoring || pending.length === 0}>
+              {scoring
+                ? 'Judging…'
+                : pending.length === 1 ? `Judge clip ${pending[0]}`
+                : clipScoreA && clipScoreB ? 'Both clips judged'
+                : 'Judge both clips'}
+            </button>
+            <span className="micro">
+              {scoring
+                ? 'One local worker, so the clips run back to back'
+                : pending.length === 0 && clipScoreA && clipScoreB
+                  ? 'Run the head-to-head below'
+                  : !slots.A.path || !slots.B.path ? 'Load a clip on both sides' : ''}
+            </span>
+          </div>
+
+          {/* Native <details>: the numbers exist, they are just not the point
+              until the verdict is in. */}
+          {(clipScoreA || clipScoreB) && (
+            <details className="reveal">
+              <summary>See individual results</summary>
+              <div className="reveal__grid">
+                {SIDES.map((side) => <Scorecard key={side} side={side} score={slots[side].score} />)}
               </div>
-              <div className="bar">
-                {/* Assigning a clip invalidates any verdict computed from the old pair. */}
-                <button className="btn btn--a" onClick={() => { setClipScoreA(clipScore); setVerdict(null); emit(`Clip A assigned (total ${clipScore.total} of 40)`) }}>
-                  Assign → Clip A (Player A)
-                </button>
-                <button className="btn btn--b" onClick={() => { setClipScoreB(clipScore); setVerdict(null); emit(`Clip B assigned (total ${clipScore.total} of 40)`) }}>
-                  Assign → Clip B (Player B)
-                </button>
-              </div>
-              {RUBRIC.map(({ key, label, gloss }) => (
-                <div key={key} className="card">
-                  <div>
-                    <span className="card__title">{label}</span>{' '}
-                    <span className="card__gloss">[{gloss}]</span>{' '}
-                    <span className="card__val">— {clipScore.scores[key].score} of 10</span>
-                    {key === 'placement' && clipScore.scores[key].zone && (
-                      <span className="zone">
-                        {' '}· zone: {ZONE_LABELS[clipScore.scores[key].zone] ?? clipScore.scores[key].zone}
-                      </span>
-                    )}
-                  </div>
-                  <div className="card__why">
-                    Why: {clipScore.scores[key].explanation}
-                  </div>
-                </div>
-              ))}
-            </div>
+            </details>
           )}
         </section>
 
         <section className="panel">
-          <div className="panel__head"><span className="panel__title">Head-to-head verdict [decides the match]</span></div>
+          <div className="panel__head">
+            <span className="panel__title">Head-to-head verdict</span>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={useHeadToHead}
+                onChange={(e) => setUseHeadToHead(e.target.checked)}
+              />
+              <span>Decide the match head-to-head</span>
+            </label>
+          </div>
           <p className="hint">
-            Both clips judged side by side in one on-device call — who shot from further out,
-            whose shot flew faster, who struck it cleaner — plus placement from each clip's goal zone
+            {useHeadToHead
+              ? 'Both clips judged side by side in one on-device call — who shot from further out, whose shot flew faster, who struck it cleaner — plus placement from each clip’s goal zone. Placement is worth 2 points, the rest 1 each, 5 on the table. The match settles on this verdict.'
+              : 'Off — the match pays out to whichever clip scored the higher total on its own. Tick the box to judge the two clips against each other instead, which is the more reliable call.'}
           </p>
+
+          {useHeadToHead && (<>
           <div className="bar" style={{ marginTop: 0 }}>
             <button className="btn btn--primary" onClick={handleCompare} disabled={!clipScoreA || !clipScoreB || comparing}>
-              {comparing ? 'Judging head-to-head…' : 'Run head-to-head'}
+              {comparing ? 'Judging head-to-head…' : verdict ? 'Re-run head-to-head' : 'Run head-to-head'}
             </button>
+            {!(clipScoreA && clipScoreB) && (
+              <span className="micro">Judge {!clipScoreA && !clipScoreB ? 'both clips' : !clipScoreA ? 'clip A' : 'clip B'} above first</span>
+            )}
           </div>
 
           {verdict && (
@@ -623,8 +854,8 @@ export default function App () {
                   {verdict.winner === 'tie' ? 'DEAD EVEN' : `PLAYER ${verdict.winner} WINS`}
                   {verdict.winner !== 'tie' && (
                     <span className="verdict__meta">
-                      {' '}· {verdict.points.a}–{verdict.points.b} on the four measures
-                      {verdict.tiebreak ? ` · settled by ${verdict.tiebreak === 'spectacle' ? 'the better finish' : 'the scorecards'}` : ''}
+                      {' '}· {verdict.points.a}–{verdict.points.b} of {verdict.maxPoints ?? 5} points
+                      {verdict.tiebreak ? ' · settled by the scorecards' : ''}
                       {verdict.mock ? ' · MOCK' : ''}
                     </span>
                   )}
@@ -634,13 +865,13 @@ export default function App () {
                 </p>
               </div>
 
-              {VERDICT_DIMENSIONS.map(({ key, label, gloss }) => (
+              {VERDICT_DIMENSIONS.map(({ key, label, gloss, points }) => (
                 <div key={key} className="card">
                   <div>
                     <span className="card__title">{label}</span>{' '}
-                    <span className="card__gloss">[{gloss}]</span>:{' '}
+                    <span className="card__gloss">[{gloss} · worth {points}]</span>:{' '}
                     <span className={`card__val ${verdict.dimensions[key].winner === 'equal' ? 'even' : verdict.dimensions[key].winner === 'A' ? 'side-a' : 'side-b'}`}>
-                      {verdict.dimensions[key].winner === 'equal' ? 'even' : `Player ${verdict.dimensions[key].winner}`}
+                      {verdict.dimensions[key].winner === 'equal' ? 'even' : `Player ${verdict.dimensions[key].winner} +${points}`}
                     </span>
                   </div>
                   <div className="card__why">
@@ -648,35 +879,45 @@ export default function App () {
                   </div>
                 </div>
               ))}
-              <div className="card">
-                <div>
-                  <span className="card__title">Spectacle</span>{' '}
-                  <span className="card__gloss">[tiebreaker only]</span>:{' '}
-                  <span className={`card__val ${verdict.spectacle.pick === 'equal' ? 'even' : verdict.spectacle.pick === 'A' ? 'side-a' : 'side-b'}`}>
-                    {verdict.spectacle.pick === 'equal' ? 'even' : `Player ${verdict.spectacle.pick}`}
-                  </span>
-                </div>
-                <div className="card__why">
-                  Why: {verdict.spectacle.reason}
-                </div>
-              </div>
             </div>
           )}
+          </>)}
         </section>
 
         <section className="panel">
           <div className="panel__head"><span className="panel__title">Match settlement</span></div>
-          <div className="kv"><span className="kv__k">Clip A</span><span className="kv__v side-a">{clipScoreA ? `scored (${clipScoreA.total} of 40)` : 'not assigned'}</span></div>
-          <div className="kv"><span className="kv__k">Clip B</span><span className="kv__v side-b">{clipScoreB ? `scored (${clipScoreB.total} of 40)` : 'not assigned'}</span></div>
-          <div className="kv"><span className="kv__k">Verdict</span><span className="kv__v">{verdict ? (verdict.winner === 'tie' ? 'dead even' : `Player ${verdict.winner}`) : 'not run yet'}</span></div>
+          {/* Totals withheld here too — raw-score mode shows them on the
+              "Deciding by" row below, because that mode IS the totals. */}
+          <div className="kv"><span className="kv__k">Clip A</span><span className="kv__v side-a">{clipScoreA ? `${clipFileName(clipScoreA)} · judged` : 'not loaded'}</span></div>
+          <div className="kv"><span className="kv__k">Clip B</span><span className="kv__v side-b">{clipScoreB ? `${clipFileName(clipScoreB)} · judged` : 'not loaded'}</span></div>
+          <div className="kv"><span className="kv__k">Deciding by</span><span className="kv__v">
+            {useHeadToHead
+              ? (verdict
+                  ? `head-to-head · ${verdict.winner === 'tie' ? 'dead even' : `Player ${verdict.winner}`}`
+                  : 'head-to-head · run it first')
+              : (rawWinner
+                  ? `raw scores · ${rawWinner === 'tie' ? 'dead even' : `Player ${rawWinner}`} (${clipScoreA.total} vs ${clipScoreB.total})`
+                  : 'raw scores · judge both clips')}
+          </span></div>
           <div className="bar">
-            {/* Settlement pays out the head-to-head verdict, so it requires one. */}
+            {/* Head-to-head mode pays out the verdict, so it needs one first;
+                raw-score mode settles on the higher total with no verdict. */}
             <button
               className="btn btn--primary"
               onClick={handleSettle}
-              disabled={!escrowId || !clipScoreA || !clipScoreB || !verdict || settled}
+              disabled={!escrowId || !clipScoreA || !clipScoreB || (useHeadToHead && !verdict) || settled}
             >
               Settle match
+            </button>
+            {/* Dev shortcut: fill both slots with fixed test scores so the
+                settle path can be driven without a real scoring run. */}
+            <button
+              className="btn btn--ghost"
+              onClick={handleInjectTestScores}
+              disabled={settled}
+              title="Skip judging: inject Clip A 34 / Clip B 33 and settle on raw scores"
+            >
+              🧪 Inject test scores (A 34 · B 33)
             </button>
           </div>
           {settleResult && (
@@ -959,7 +1200,7 @@ function PredictTab ({ address }) {
       pEmit('Scoring clip locally…')
       const result = await window.probable.clip.score(pVideoPath)
       setPClipScore(result)
-      pEmit(`Scored: total ${result.total} of 40 from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
+      pEmit(`Scored: total ${result.total} of ${MAX_TOTAL} from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
     } catch (err) { pEmit(`Score failed: ${err.message}`) }
     finally { setPPreparingModel(false); setPScoring(false) }
   }
@@ -970,7 +1211,7 @@ function PredictTab ({ address }) {
       const updated = await window.probable.predict.submitClip(activeBet.id, side, pClipScore)
       setActiveBet(updated)
       const playerName = side === 'A' ? updated.playerAChoice.name : updated.playerBChoice.name
-      pEmit(`Clip submitted for ${playerName} (side ${side}) — total ${pClipScore.total}/40`)
+      pEmit(`Clip submitted for ${playerName} (side ${side}) — total ${pClipScore.total}/${MAX_TOTAL}`)
       setPClipScore(null)
       setPVideoPath(null)
     } catch (err) { pEmit(`Submit failed: ${err.message}`) }
@@ -1274,7 +1515,7 @@ function PredictTab ({ address }) {
                   </div>
                   {activeBet.clipA ? (
                     <div className="clipcard__body">
-                      ✓ Clip submitted · Total: <b>{activeBet.clipA.total}/40</b>
+                      ✓ Clip submitted · Total: <b>{activeBet.clipA.total}/{MAX_TOTAL}</b>
                     </div>
                   ) : (
                     <div className="clipcard__body">No clip submitted yet</div>
@@ -1288,7 +1529,7 @@ function PredictTab ({ address }) {
                   </div>
                   {activeBet.clipB ? (
                     <div className="clipcard__body">
-                      ✓ Clip submitted · Total: <b>{activeBet.clipB.total}/40</b>
+                      ✓ Clip submitted · Total: <b>{activeBet.clipB.total}/{MAX_TOTAL}</b>
                     </div>
                   ) : (
                     <div className="clipcard__body">No clip submitted yet</div>
@@ -1315,7 +1556,7 @@ function PredictTab ({ address }) {
                 {pClipScore && (
                   <div style={{ marginTop: 10 }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-                      <span className="score-big">{pClipScore.total} <small>/ 40</small></span>
+                      <span className="score-big">{pClipScore.total} <small>/ {MAX_TOTAL}</small></span>
                       <span className="micro">{pClipScore.frameCount} frames</span>
                       {pClipScore.mock && <span className="pill pill--warn">mock</span>}
                     </div>

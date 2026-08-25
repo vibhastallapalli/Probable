@@ -87,9 +87,10 @@ function registerHandlers () {
   })
 
   // The optional verdict is the head-to-head result already shown to the
-  // players, passed through so settlement never re-runs the model.
-  ipcMain.handle('match:settle', (_event, matchId, clipA, clipB, addressA, addressB, verdict) => {
-    return settlement.settleMatch(matchId, clipA, clipB, addressA, addressB, verdict)
+  // players, passed through so settlement never re-runs the model. opts
+  // carries { useHeadToHead } — when false, settlement pays out on raw scores.
+  ipcMain.handle('match:settle', (_event, matchId, clipA, clipB, addressA, addressB, verdict, opts) => {
+    return settlement.settleMatch(matchId, clipA, clipB, addressA, addressB, verdict, opts)
   })
 
   // -------------------------------------------------------------------------

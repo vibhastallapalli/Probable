@@ -45,11 +45,24 @@ const ffprobePath = require('ffprobe-static').path
 // On top of the per-clip passes, a match is decided by a HEAD-TO-HEAD pass
 // (compareHeadToHead): both clips' key frames go into one call and the model
 // answers direct either/or questions — whose shot flew faster, whose strike
-// was cleaner, whose finish looked better. Scoring each clip alone kept
-// producing near-identical numbers because the model never had the other
-// clip in view to notice the differences; asking it to pick between two
-// shots it can see side by side is a far easier judgment for a small VLM
-// than assigning absolute ratings from memory of a rubric.
+// was cleaner. Scoring each clip alone kept producing near-identical numbers
+// because the model never had the other clip in view to notice the
+// differences; asking it to pick between two shots it can see side by side
+// is a far easier judgment for a small VLM than assigning absolute ratings
+// from memory of a rubric.
+//
+// "Whose finish looked better" was a third question here and is now gone.
+// Spectacle is a taste call, not something a 2B VLM can read off seven
+// stills, and on real pairs it handed the win to the scuffier shot often
+// enough to be worse than no signal. What survives are the questions with a
+// physical answer in the pixels.
+//
+// PLACEMENT COUNTS DOUBLE (PLACEMENT_WEIGHT), both in a clip's total and as
+// a head-to-head dimension win. Picking your spot in the goal is the hardest
+// thing in the clip and the only dimension decided by a deterministic,
+// mirror-checked vision pass instead of the model's shakier either/or
+// judgment — so pace and strike cleanliness, which it wobbles on, can no
+// longer outvote it on their own.
 //
 // Two safeguards keep that judgment honest, both in the spirit of the
 // placement pass's mirror check:
@@ -233,7 +246,7 @@ The first ${countA} images are ordered moments from PLAYER A's clip, start to
 finish. The remaining ${countB} images are ordered moments from PLAYER B's
 clip, start to finish. Keep careful count so you never mix the two shots up.
 
-Compare the two shots directly and answer three questions. For each one pick
+Compare the two shots directly and answer two questions. For each one pick
 "A" if it is true of Player A's shot, "B" if it is true of Player B's shot,
 or "equal" ONLY if the two shots genuinely look the same on that point.
 
@@ -241,7 +254,6 @@ or "equal" ONLY if the two shots genuinely look the same on that point.
    ball covers from one moment to the next in each clip.
 2. cleaner_strike: Whose strike is the CLEANER contact — a properly struck
    side-foot or laces hit, rather than a scrappy toe poke or a mishit?
-3. more_spectacular: Whose finish is MORE SPECTACULAR to watch?
 
 For each answer also give one short reason, worded the way a person would
 casually say it out loud to a friend — for example "he absolutely leathered
@@ -281,20 +293,35 @@ ${GROUNDING_RULES}`
 // The 9 cells of the goal-mouth grid (3 rows x 3 columns, split by the
 // crossbar and goalposts) and the fixed score each one is worth. The model
 // only ever picks a zone; the number comes from this table, so the score can
-// never contradict the zone. Corners are the hardest targets, mid-height
-// sides and top center are reachable, and central or low-central shots are
-// the easiest for a keeper to cover.
+// never contradict the zone.
+//
+// HEIGHT DOMINATES SIDE. Getting the ball up under the crossbar takes a
+// struck, lifted shot; a bottom corner can be reached by rolling it past a
+// keeper's feet. The old table ranked bottom corners (8) above top center
+// (5), which is why a lifted finish into the top middle lost the placement
+// dimension to a low roller in the corner — the exact complaint this table
+// is tuned to fix. Every top-row cell now outranks every bottom-row one.
 const PLACEMENT_ZONE_SCORES = {
   top_left: 10,
   top_right: 10,
-  bottom_left: 8,
-  bottom_right: 8,
-  mid_left: 6,
-  mid_right: 6,
-  top_center: 5,
+  top_center: 8,
+  bottom_left: 6,
+  bottom_right: 6,
+  mid_left: 5,
+  mid_right: 5,
   mid_center: 3,
   bottom_center: 2,
 }
+
+// Placement counts double everywhere a score is added up or a dimension is
+// won. Picking your spot in the goal is the hardest thing in the clip and
+// the one thing this model reads reliably; shot pace and strike cleanliness
+// are the metrics it wobbles on, so they no longer outvote it.
+const PLACEMENT_WEIGHT = 2
+
+// Highest total sumScores can return: skill + difficulty + aesthetic at 10
+// each, plus a weighted placement. The renderer shows totals out of this.
+const MAX_TOTAL = 30 + 10 * PLACEMENT_WEIGHT
 
 const PLACEMENT_ZONES = Object.keys(PLACEMENT_ZONE_SCORES)
 
@@ -359,17 +386,21 @@ const comparePickField = {
   additionalProperties: false,
 }
 
-// The three direct questions the head-to-head call must answer. Placement
-// is deliberately absent — it comes from each clip's zone verdict — and so
-// is distance, which gets its own composite-image probe (DISTANCE_PROMPT).
+// The two direct questions the head-to-head call must answer. Placement is
+// deliberately absent — it comes from each clip's zone verdict — and so is
+// distance, which gets its own single-image probe (DISTANCE_PROMPT).
+//
+// "Whose finish is more spectacular" used to be asked here as a tiebreaker.
+// It is gone: judging spectacle is a taste call this model has no business
+// making from seven stills, and on real pairs it happily crowned a scuffed
+// low roller. A tie now falls straight to the scorecards.
 const COMPARE_SCHEMA = {
   type: 'object',
   properties: {
     faster_shot: comparePickField,
     cleaner_strike: comparePickField,
-    more_spectacular: comparePickField,
   },
-  required: ['faster_shot', 'cleaner_strike', 'more_spectacular'],
+  required: ['faster_shot', 'cleaner_strike'],
   additionalProperties: false,
 }
 
@@ -907,13 +938,34 @@ async function runCompletion (sdk, modelId, { history, responseFormat }) {
   let final
   try {
     final = await run.final
-  } finally {
+  } catch (err) {
+    // The QVAC worker is a separate process and it does occasionally die
+    // mid-request (WORKER_CRASHED). `_qvac` caches its modelId process-wide,
+    // so without dropping the handle here every later call would keep talking
+    // to a corpse: one flaky crash would brick scoring for the rest of the
+    // session and every clip after it would fail with the same error. Drop
+    // the handle so the next call reloads the model, and skip the cache clear
+    // because there is no worker left to clear.
+    if (isWorkerDead(err)) {
+      console.warn('[qvac] worker died mid-request — dropping the model handle so the next call reloads it')
+      _qvac = null
+      throw err
+    }
     await clearCache(sdk)
+    throw err
   }
+  await clearCache(sdk)
 
   // QVAC's CompletionFinal exposes the assistant text as `contentText`
   // (with the unparsed original at `raw.fullText`).
   return String(final.contentText ?? final.raw?.fullText ?? '')
+}
+
+// Whether an error means the worker process is gone, rather than the model
+// having refused or overflowed. Matched on both the SDK's numeric code and
+// the message, since only the message is stable across SDK versions.
+function isWorkerDead (err) {
+  return err?.code === 50205 || /WORKER_CRASHED|worker exited/i.test(String(err?.message ?? ''))
 }
 
 /**
@@ -1026,7 +1078,7 @@ async function flipFrame (framePath) {
  * No longer the settlement decider: matches settle on compareHeadToHead's
  * verdict, which judges both clips side by side. This totals comparison
  * remains as supporting detail, as the last tiebreak when the head-to-head
- * dimensions and the spectacle pick are all dead even, and as the fallback
+ * dimensions all come out dead even, and as the fallback
  * for legacy score objects that carry no frame paths.
  *
  * @param {object} clipA - scoreClip() result for clip A.
@@ -1058,9 +1110,21 @@ function compareClips (clipA, clipB) {
 // The four dimensions a match is decided on, in the order they are reported.
 // distance/speed/technique come from the model's either/or answers in the
 // comparison call; placement is decided in code from the two zone verdicts.
-// Spectacle is asked in the same call but only breaks a 2-2 (or all-equal)
-// tie — it never counts as a fifth dimension.
 const COMPARE_DIMENSIONS = ['distance', 'speed', 'technique', 'placement']
+
+// Points a dimension win is worth. Placement pays double: it is the hardest
+// thing to actually do in a clip and the only dimension decided by a
+// deterministic, mirror-checked vision pass rather than the model's shakier
+// either/or judgment. At weight 1 a clean top-corner finish kept losing 3-1
+// to a low roller that the model happened to call faster and cleaner. Out of
+// 5 available points, placement alone no longer wins a match, but it now
+// takes two of the three model-answered dimensions to overturn it.
+const COMPARE_DIMENSION_WEIGHTS = {
+  distance: 1,
+  speed: 1,
+  technique: 1,
+  placement: PLACEMENT_WEIGHT,
+}
 
 // Maps each model-answered dimension to its question key in COMPARE_SCHEMA.
 // Distance is absent: it is answered by the composite-image probe.
@@ -1091,11 +1155,6 @@ const FALLBACK_REASONS = {
     A: 'Player A catches his strike more cleanly.',
     B: 'Player B catches his strike more cleanly.',
     equal: 'Both strikes look equally clean.',
-  },
-  spectacle: {
-    A: "Player A's finish is the better watch.",
-    B: "Player B's finish is the better watch.",
-    equal: 'Neither finish stands out over the other.',
   },
 }
 
@@ -1150,19 +1209,19 @@ function selectComparisonFrames (frames, count = COMPARE_FRAME_COUNT) {
 /**
  * Judge two scored clips head to head and produce the match verdict.
  *
- * The question call (whose shot flew faster, whose strike was cleaner,
- * whose finish was more spectacular) sees both clips' key frames together
- * and runs TWICE, once with each clip first; an answer only counts when
- * the two runs mirror each other, so a pick that just favors whichever
- * clip came first degrades to "equal". Distance gets its own probe: each
- * clip is judged ALONE on a closed stride scale, on two pre-shot moments
- * that must agree, and the buckets are compared in code. Placement is not
- * re-asked: the two clips' zone verdicts are compared by their table
- * scores (top corner beats center).
+ * The question call (whose shot flew faster, whose strike was cleaner) sees
+ * both clips' key frames together and runs TWICE, once with each clip
+ * first; an answer only counts when the two runs mirror each other, so a
+ * pick that just favors whichever clip came first degrades to "equal".
+ * Distance gets its own probe: each clip is judged ALONE on a closed stride
+ * scale, on two pre-shot moments that must agree, and the buckets are
+ * compared in code. Placement is not re-asked: the two clips' zone verdicts
+ * are compared by their table scores (top corner beats bottom corner beats
+ * center).
  *
- * Distance, speed, technique, and placement each award one point; most
- * points wins. A points tie falls to the spectacle pick, then to the
- * scorecard totals, then to a genuine tie.
+ * Distance, speed, and technique award one point each and placement awards
+ * PLACEMENT_WEIGHT (2), out of 5; most points wins. A points tie falls to
+ * the scorecard totals, then to a genuine tie.
  *
  * Greedy decoding (temp 0, inherited from runCompletion) keeps the verdict
  * reproducible — the same two clips must produce the same winner when money
@@ -1174,10 +1233,10 @@ function selectComparisonFrames (frames, count = COMPARE_FRAME_COUNT) {
  * @param {string[]} [opts.framesA] - Override frame paths for clip A.
  * @param {string[]} [opts.framesB] - Override frame paths for clip B.
  * @returns {Promise<object>} Verdict:
- *   { winner: 'A'|'B'|'tie', summary, points: {a, b},
+ *   { winner: 'A'|'B'|'tie', summary, points: {a, b}, maxPoints,
  *     dimensions: { distance|speed|technique: {winner, reason},
  *                   placement: {winner, reason, zoneA, zoneB} },
- *     spectacle: {pick, reason}, tiebreak: null|'spectacle'|'totals',
+ *     tiebreak: null|'totals',
  *     totals: {a, b}, frameCounts: {a, b}, model, mock }
  */
 async function compareHeadToHead (clipA, clipB, opts = {}) {
@@ -1219,7 +1278,6 @@ async function compareHeadToHead (clipA, clipB, opts = {}) {
   for (const [dim, key] of Object.entries(COMPARE_QUESTION_KEYS)) {
     modelDimensions[dim] = reconcileOrders(dim, forward[key], reversed[key])
   }
-  modelDimensions.spectacle = reconcileOrders('spectacle', forward.more_spectacular, reversed.more_spectacular)
 
   // Distance probe: each clip's pre-shot moments judged alone on the
   // stride scale, buckets compared in code.
@@ -1369,7 +1427,7 @@ function placementDimension (clipA, clipB) {
 
 // Combine the order-checked model dimensions, the zone-derived placement
 // dimension, and the tiebreak chain into the final match verdict.
-// `modelDimensions` carries distance/speed/technique/spectacle already
+// `modelDimensions` carries distance/speed/technique already
 // reconciled to { winner: 'A'|'B'|'equal', reason }.
 function buildVerdict (modelDimensions, clipA, clipB, meta) {
   const dimensions = {}
@@ -1378,15 +1436,12 @@ function buildVerdict (modelDimensions, clipA, clipB, meta) {
       ? placementDimension(clipA, clipB)
       : modelDimensions[dim]
   }
-  const spectacle = {
-    pick: modelDimensions.spectacle.winner,
-    reason: modelDimensions.spectacle.reason,
-  }
 
   const points = { a: 0, b: 0 }
   for (const dim of COMPARE_DIMENSIONS) {
-    if (dimensions[dim].winner === 'A') points.a++
-    else if (dimensions[dim].winner === 'B') points.b++
+    const weight = COMPARE_DIMENSION_WEIGHTS[dim]
+    if (dimensions[dim].winner === 'A') points.a += weight
+    else if (dimensions[dim].winner === 'B') points.b += weight
   }
 
   const totalsDetail = compareClips(clipA, clipB)
@@ -1395,9 +1450,6 @@ function buildVerdict (modelDimensions, clipA, clipB, meta) {
   let tiebreak = null
   if (points.a !== points.b) {
     winner = points.a > points.b ? 'A' : 'B'
-  } else if (spectacle.pick === 'A' || spectacle.pick === 'B') {
-    winner = spectacle.pick
-    tiebreak = 'spectacle'
   } else if (totalsDetail.winner !== 'tie') {
     winner = totalsDetail.winner
     tiebreak = 'totals'
@@ -1407,10 +1459,10 @@ function buildVerdict (modelDimensions, clipA, clipB, meta) {
 
   return {
     winner,
-    summary: buildSummary(winner, tiebreak, dimensions, spectacle),
+    summary: buildSummary(winner, tiebreak, dimensions),
     points,
+    maxPoints: Object.values(COMPARE_DIMENSION_WEIGHTS).reduce((a, b) => a + b, 0),
     dimensions,
-    spectacle,
     tiebreak,
     totals: { a: totalsDetail.totalA, b: totalsDetail.totalB },
     ...meta,
@@ -1420,19 +1472,16 @@ function buildVerdict (modelDimensions, clipA, clipB, meta) {
 // The one-paragraph plain-language "why they won" shown as the headline.
 // Composed in code from the per-dimension reasons, so it is deterministic
 // and stays inside the same plain-language rules as everything else.
-function buildSummary (winner, tiebreak, dimensions, spectacle) {
+function buildSummary (winner, tiebreak, dimensions) {
   if (winner === 'tie') {
-    return 'Dead even — nothing separates the two shots on distance, pace, strike, or placement, and neither finish stands out over the other.'
+    return 'Dead even — nothing separates the two shots on distance, pace, strike, or placement.'
   }
 
   const wins = COMPARE_DIMENSIONS.filter((dim) => dimensions[dim].winner === winner)
 
   if (wins.length === 0) {
-    // Won purely on a tiebreak with no dimension in their column.
-    const via = tiebreak === 'spectacle'
-      ? `the more spectacular finish settles it: ${spectacle.reason}`
-      : 'the overall scorecards settle it.'
-    return `Player ${winner} takes it — the shots are level on every measure, so ${via}`
+    // Won purely on the scorecards with no dimension in their column.
+    return `Player ${winner} takes it — the shots are level on every measure, so the overall scorecards settle it.`
   }
 
   const winPhrases = wins.map((dim) => DIMENSION_WIN_PHRASES[dim])
@@ -1441,11 +1490,9 @@ function buildSummary (winner, tiebreak, dimensions, spectacle) {
     : winPhrases.slice(0, -1).join(', ') + ' and ' + winPhrases[winPhrases.length - 1]
 
   const reasons = wins.map((dim) => dimensions[dim].reason).join(' ')
-  const tiebreakNote = tiebreak === 'spectacle'
-    ? ` The finish that looks better settles a split decision: ${spectacle.reason}`
-    : tiebreak === 'totals'
-      ? ' With the shots split down the middle, the overall scorecards settle it.'
-      : ''
+  const tiebreakNote = tiebreak === 'totals'
+    ? ' With the shots split down the middle, the overall scorecards settle it.'
+    : ''
 
   return `Player ${winner} takes it — he ${listed}. ${reasons}${tiebreakNote}`
 }
@@ -1462,7 +1509,6 @@ function mockModelDimensions (clipA, clipB) {
     distance: answer('distance', clipA?.scores?.difficulty?.score ?? 0, clipB?.scores?.difficulty?.score ?? 0),
     speed: answer('speed', clipA?.scores?.skill?.score ?? 0, clipB?.scores?.skill?.score ?? 0),
     technique: answer('technique', clipA?.scores?.skill?.score ?? 0, clipB?.scores?.skill?.score ?? 0),
-    spectacle: answer('spectacle', clipA?.scores?.aesthetic?.score ?? 0, clipB?.scores?.aesthetic?.score ?? 0),
   }
 }
 
@@ -1472,7 +1518,10 @@ function mockModelDimensions (clipA, clipB) {
 
 function sumScores (scores) {
   if (!scores) return 0
-  return SCORE_FIELDS.reduce((sum, f) => sum + (Number(scores[f]?.score) || 0), 0)
+  return SCORE_FIELDS.reduce((sum, f) => {
+    const weight = f === 'placement' ? PLACEMENT_WEIGHT : 1
+    return sum + weight * (Number(scores[f]?.score) || 0)
+  }, 0)
 }
 
 function clampScore (n) {
@@ -1617,6 +1666,9 @@ module.exports = {
   MODEL_INFO,
   PLACEMENT_ZONE_SCORES,
   PLACEMENT_ZONES,
+  PLACEMENT_WEIGHT,
+  MAX_TOTAL,
+  COMPARE_DIMENSION_WEIGHTS,
   MIN_CLIP_FPS,
   extractFrames,
   getVideoDuration,

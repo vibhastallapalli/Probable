@@ -35,9 +35,11 @@ const {
 //   ball visibility, full-goal visibility, ball/goal relation, row, and
 //   column. At least two usable observations and a strict majority are
 //   required. A failed first attempt gets one targeted retry with unused
-//   nearby moments. A left/right verdict must survive a mirrored-image check;
-//   failed evidence remains unresolved instead of becoming center or
-//   bottom-center.
+//   nearby moments. A left/right verdict is checked on a mirrored image. If
+//   the model preserves every visual invariant and still sees an off-centre
+//   finish but cannot flip left/right reliably, only the direction is
+//   discarded and the result becomes a direction-neutral side zone. A loss
+//   of the ball, goal, row, or side-vs-centre distinction stays unresolved.
 //   Stage 2 (describe, frames attached): report only what is literally visible
 //   in the sampled frames — including how far the shooter stands from the
 //   goal, how fast the shot travels, and the kicking foot at contact. No
@@ -317,10 +319,11 @@ image, picture, grid, row, column, or cell, and never describe how you
 worked the answer out.
 ${GROUNDING_RULES}`
 
-// The 9 cells of the goal-mouth grid (3 rows x 3 columns, split by the
-// crossbar and goalposts) and the fixed score each one is worth. The model
-// only ever picks a zone; the number comes from this table, so the score can
-// never contradict the zone.
+// The 9 exact cells of the goal-mouth grid (3 rows x 3 columns, split by the
+// crossbar and goalposts) and three internal direction-neutral side zones.
+// The latter are used only when a mirror test preserves row and off-centre
+// placement but cannot verify exact left/right chirality. Left and right have
+// identical point values, so discarding direction never changes the score.
 //
 // HEIGHT DOMINATES SIDE. Getting the ball up under the crossbar takes a
 // struck, lifted shot; a bottom corner can be reached by rolling it past a
@@ -331,11 +334,14 @@ ${GROUNDING_RULES}`
 const PLACEMENT_ZONE_SCORES = {
   top_left: 10,
   top_right: 10,
+  top_side: 10,
   top_center: 8,
   bottom_left: 6,
   bottom_right: 6,
+  bottom_side: 6,
   mid_left: 5,
   mid_right: 5,
+  mid_side: 5,
   mid_center: 3,
   bottom_center: 2,
 }
@@ -350,7 +356,13 @@ const PLACEMENT_WEIGHT = 2
 // each, plus a weighted placement. The renderer shows totals out of this.
 const MAX_TOTAL = 30 + 10 * PLACEMENT_WEIGHT
 
-const PLACEMENT_ZONES = Object.keys(PLACEMENT_ZONE_SCORES)
+// Keep mock scoring on the ordinary nine-cell grid. Direction-neutral zones
+// are evidence fallbacks, so they should only appear after a real mirror check.
+const PLACEMENT_ZONES = [
+  'top_left', 'top_center', 'top_right',
+  'mid_left', 'mid_center', 'mid_right',
+  'bottom_left', 'bottom_center', 'bottom_right',
+]
 
 // Plain-words rendering of each zone, used wherever a zone is spoken about
 // in player-facing text (the judge's settled-fact line and the placement
@@ -359,10 +371,13 @@ const PLACEMENT_ZONES = Object.keys(PLACEMENT_ZONE_SCORES)
 const PLACEMENT_ZONE_PHRASES = {
   top_left: 'into the top left corner',
   top_right: 'into the top right corner',
+  top_side: 'in high toward one side of the goal',
   bottom_left: 'in low by the left post',
   bottom_right: 'in low by the right post',
+  bottom_side: 'in low toward one side of the goal',
   mid_left: 'in at waist height on the left side',
   mid_right: 'in at waist height on the right side',
+  mid_side: 'in at waist height toward one side of the goal',
   top_center: 'in high through the middle',
   mid_center: 'in through the middle of the goal',
   bottom_center: 'in low through the middle',
@@ -950,6 +965,8 @@ async function scoreClip (frames, metadata = {}) {
     placementReport: {
       status: placement.status,
       evidence: placement.evidence,
+      directionVerified: placement.directionVerified,
+      directionNeutral: placement.directionNeutral,
     },
     ...baseMeta,
   })
@@ -1039,8 +1056,11 @@ function isWorkerDead (err) {
  * The initial three tail frames must provide at least two usable observations
  * and a strict row/column majority. A failed initial attempt gets one bounded
  * visual recovery using additional frames chosen for the observed failure.
- * A left/right result must also survive a mirror transformation. Nothing in
- * this function converts uncertainty into a real goal zone.
+ * A left/right result is also checked under a mirror transformation. Exact
+ * chirality must flip. If all invariant facts survive and both observations
+ * remain off-centre, the system may retain only the direction-neutral side
+ * class because left and right carry identical points. Nothing here converts
+ * missing or contradictory visual evidence into a real goal zone.
  */
 // WHAT THIS DOES: Collects several independent observations, retries once
 //   with unused frames when needed, and returns CLEAR, RECOVERED, or
@@ -1163,7 +1183,28 @@ async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
     assessment,
     failedMirrorFrames
   )
-  if (mirror.passed) return { assessment, mirror }
+  if (mirror.passed) {
+    if (mirror.directionNeutral) {
+      return {
+        assessment: {
+          ...assessment,
+          column: 'side',
+          directionNeutral: true,
+          directionVerified: false,
+          mirrorMismatch: true,
+        },
+        mirror,
+      }
+    }
+    return {
+      assessment: {
+        ...assessment,
+        directionNeutral: false,
+        directionVerified: true,
+      },
+      mirror,
+    }
+  }
 
   if (mirror.frame) failedMirrorFrames.add(mirror.frame)
   return {
@@ -1174,6 +1215,8 @@ async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
       column: 'unclear',
       issues: [PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT],
       mirrorMismatch: true,
+      directionVerified: false,
+      directionNeutral: false,
     },
     mirror,
   }
@@ -1181,7 +1224,12 @@ async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
 
 async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedFrames) {
   if (assessment.column === 'center') {
-    return { required: false, passed: true }
+    return {
+      required: false,
+      passed: true,
+      directionVerified: true,
+      directionNeutral: false,
+    }
   }
 
   const decider = [...votes].reverse().find((vote) =>
@@ -1199,16 +1247,21 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
     await flipFrame(decider.frame)
   )
   const expectedColumn = assessment.column === 'left' ? 'right' : 'left'
-  const passed =
+  const invariantsPassed =
     mirrored.ball_visibility === 'visible' &&
     mirrored.goal_visibility === 'full' &&
     mirrored.ball_goal_relation === 'in_or_entering' &&
-    mirrored.row === assessment.row &&
-    mirrored.column === expectedColumn
+    mirrored.row === assessment.row
+  const exactDirectionPassed = invariantsPassed && mirrored.column === expectedColumn
+  const sideClassPreserved = invariantsPassed &&
+    (mirrored.column === 'left' || mirrored.column === 'right')
+  const directionNeutral = !exactDirectionPassed && sideClassPreserved
+  const passed = exactDirectionPassed || directionNeutral
 
   console.log(
     `[qvac] placement mirror check: row=${mirrored.row} ` +
-    `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})`
+    `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})` +
+    (directionNeutral ? ' — exact side unverified; retaining direction-neutral side' : '')
   )
 
   return {
@@ -1218,22 +1271,37 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
     expectedColumn,
     observedColumn: mirrored.column,
     observedRow: mirrored.row,
+    invariantsPassed,
+    directionVerified: exactDirectionPassed,
+    directionNeutral,
+    reason: exactDirectionPassed
+      ? 'exact_direction_verified'
+      : directionNeutral
+        ? 'side_class_preserved_direction_unverified'
+        : 'mirror_invariant_failed',
   }
 }
 
 function resolvedPlacement (status, votes, assessment, evidence) {
+  const directionNeutral = assessment.column === 'side'
   const chosen = [...votes].reverse().find((vote) =>
     vote.ball_visibility === 'visible' &&
     vote.goal_visibility === 'full' &&
     vote.ball_goal_relation === 'in_or_entering' &&
     vote.row === assessment.row &&
-    vote.column === assessment.column
+    (directionNeutral
+      ? vote.column === 'left' || vote.column === 'right'
+      : vote.column === assessment.column)
   )
   return {
     status,
     row: assessment.row,
     column: assessment.column,
-    explanation: chosen?.explanation ?? '',
+    // A raw explanation may name left or right. Do not expose that discarded
+    // detail when the mirror check retained only the direction-neutral class.
+    explanation: directionNeutral ? '' : (chosen?.explanation ?? ''),
+    directionVerified: !directionNeutral,
+    directionNeutral,
     issues: [],
     evidence,
   }
@@ -1256,6 +1324,8 @@ function publicAssessment (assessment) {
     },
     requiredAgreement: Number(assessment?.requiredAgreement) || 2,
     mirrorMismatch: Boolean(assessment?.mirrorMismatch),
+    directionVerified: assessment?.directionVerified === true,
+    directionNeutral: Boolean(assessment?.directionNeutral),
   }
 }
 
@@ -1819,6 +1889,7 @@ function finalizeScore (parsed, placement, meta) {
     zone,
     explanation,
     evidenceStatus: placement.status,
+    directionVerified: placement?.directionVerified !== false,
   }
 
   warnOnDuplicateExplanations(scores)

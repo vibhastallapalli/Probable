@@ -9,7 +9,7 @@ the policy for contradictory rules and reachable bad outcomes.
 
 - `PlacementDecision` represents the result of the placement pipeline.
 - `placementResolved` says whether repeated evidence produced a supported
-  row and column.
+  row and either an exact column or a direction-neutral side class.
 - `recoveryAttempted` separates the initial three-frame check from the one
   bounded visual recovery.
 - The four reason measures represent ball, goal, shot-moment, and placement
@@ -18,6 +18,21 @@ the policy for contradictory rules and reachable bad outcomes.
   separate from clip-quality feedback.
 - `MatchSettlementRequested` and `matchHasUnresolvedClip` represent the final
   payout guard.
+
+## Mirror degradation without invented placement
+
+Left and right carry identical placement points. When a horizontal mirror
+preserves ball visibility, the full goal, the ball/goal relationship, the row,
+and the fact that the finish is off-centre—but Qwen fails to reverse the exact
+left/right word—the implementation discards only that unsupported direction.
+It assigns an internal `side` class with the same score and tells the user that
+left/right was not verified. If any invariant fact changes, or the mirrored
+answer changes between side and centre, placement remains unresolved and the
+existing SLEEC fallback rules still block scoring and settlement.
+
+The formal policy does not need another branch for this representation:
+`placementResolved` is true only after the direction-neutral class itself has
+the required invariant evidence. No exact left/right claim is assigned.
 
 The implementation corresponding to those states lives in:
 

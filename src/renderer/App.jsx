@@ -31,20 +31,24 @@ const VERDICT_DIMENSIONS = [
   { key: 'placement', label: 'Placement', gloss: 'who found the better spot', points: 2 },
 ]
 
-// Plain-words labels for the 9 goal-mouth zones the placement criterion is
-// classified into (3 rows x 3 columns, split by the crossbar and goalposts).
+// Plain-words labels for the 9 exact goal-mouth zones plus the three internal
+// direction-neutral side zones used when a mirror check preserves off-centre
+// placement but cannot verify exact left/right direction.
 // Keys match the `zone` field the scorer returns; the score is derived from
 // the zone in the main process, so showing both makes any mismatch obvious.
 const ZONE_LABELS = {
   top_left: 'top left corner',
   top_center: 'top center',
   top_right: 'top right corner',
+  top_side: 'top, toward one side (left/right unverified)',
   mid_left: 'mid-height left',
   mid_center: 'dead center',
   mid_right: 'mid-height right',
+  mid_side: 'mid-height, toward one side (left/right unverified)',
   bottom_left: 'bottom left corner',
   bottom_center: 'bottom center',
   bottom_right: 'bottom right corner',
+  bottom_side: 'low, toward one side (left/right unverified)',
 }
 
 // Fallback so the status badge renders even before the main process replies.
@@ -504,6 +508,9 @@ export default function App () {
           patchSlot(side, { score: result, status: 'done', issue: null, error: null })
           if (result.placementReport?.status === 'RECOVERED') {
             emit(`Clip ${side}: placement recovered using additional nearby moments`)
+          }
+          if (result.placementReport?.directionNeutral) {
+            emit(`Clip ${side}: mirror preserved row and off-centre placement; exact left/right was not used`)
           }
           // No total in the log on purpose — the Log panel is on screen, and
           // leaking the two numbers there defeats the hidden scorecards.
@@ -1273,6 +1280,9 @@ function PredictTab ({ address }) {
       setPClipIssue(null)
       if (result.placementReport?.status === 'RECOVERED') {
         pEmit('Placement recovered using additional nearby moments')
+      }
+      if (result.placementReport?.directionNeutral) {
+        pEmit('Mirror preserved row and off-centre placement; exact left/right was not used')
       }
       pEmit(`Scored: total ${result.total} of ${MAX_TOTAL} from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
     } catch (err) {

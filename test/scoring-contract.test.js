@@ -120,13 +120,35 @@ test('a side placement must pass the mirrored-image check', async () => {
   assert.equal(model.calls(), 4)
 })
 
-test('two failed mirror checks remain unresolved instead of becoming center', async () => {
+test('a chirality-only mirror mismatch keeps an honest direction-neutral side zone', async () => {
+  // Reproduces PlayerA_test_1: three mid/right observations followed by a
+  // mirrored observation that incorrectly remains mid/right.
+  const right = vote({ row: 'mid', column: 'right' })
+  const model = mockSdk([
+    right, right, right,
+    right, // mirror preserved off-centre placement but did not flip direction
+  ])
+  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+
+  assert.equal(result.status, 'CLEAR')
+  assert.equal(result.row, 'mid')
+  assert.equal(result.column, 'side')
+  assert.equal(result.directionVerified, false)
+  assert.equal(result.directionNeutral, true)
+  assert.equal(result.explanation, '')
+  assert.equal(result.evidence.mirrorChecks[0].passed, true)
+  assert.equal(result.evidence.mirrorChecks[0].directionNeutral, true)
+  assert.equal(model.calls(), 4)
+})
+
+test('mirror checks that lose side-vs-center evidence remain unresolved', async () => {
   const left = vote({ column: 'left' })
+  const center = vote({ column: 'center' })
   const model = mockSdk([
     left, left, left,
-    left, // initial mirror should have flipped right
+    center, // initial mirror lost the off-centre class
     left, left, left,
-    left, // recovery mirror should also have flipped right
+    center, // recovery mirror failed the same invariant
   ])
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
@@ -136,6 +158,26 @@ test('two failed mirror checks remain unresolved instead of becoming center', as
   assert.deepEqual(result.issues, ['PLACEMENT_DISAGREEMENT'])
   assert.equal(result.evidence.mirrorChecks.length, 2)
   assert.equal(model.calls(), 8)
+})
+
+test('direction-neutral side placement receives the same score without claiming left or right', () => {
+  const scored = scoring.finalizeScore({
+    skill: { score: 7, explanation: 'Clean contact.' },
+    difficulty: { score: 7, explanation: 'A difficult attempt.' },
+    aesthetic: { score: 7, explanation: 'A strong-looking finish.' },
+  }, {
+    status: 'CLEAR',
+    row: 'mid',
+    column: 'side',
+    explanation: '',
+    directionVerified: false,
+  }, {})
+
+  assert.equal(scored.scores.placement.zone, 'mid_side')
+  assert.equal(scored.scores.placement.score, scoring.PLACEMENT_ZONE_SCORES.mid_left)
+  assert.equal(scored.scores.placement.directionVerified, false)
+  assert.match(scored.scores.placement.explanation, /toward one side/i)
+  assert.doesNotMatch(scored.scores.placement.explanation, /left|right/i)
 })
 
 test('a technical placement call is retried on the same evidence', async () => {

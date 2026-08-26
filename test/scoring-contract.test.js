@@ -21,6 +21,7 @@ function vote (overrides = {}) {
     ball_visibility: 'visible',
     goal_visibility: 'full',
     ball_goal_relation: 'in_or_entering',
+    ball_ground_proximity: 'clear_air',
     row: 'top',
     column: 'center',
     explanation: 'The ball went in high through the middle.',
@@ -120,6 +121,37 @@ test('a side placement must pass the mirrored-image check', async () => {
   assert.equal(model.calls(), 4)
 })
 
+test('Player B ground evidence corrects a contradictory mid-height label to bottom-left', async () => {
+  const reportedMidLeft = vote({
+    row: 'mid',
+    column: 'left',
+    ball_ground_proximity: 'near_ground',
+    explanation: 'The ball appears waist high on the left.',
+  })
+  const mirroredMidRight = vote({
+    row: 'mid',
+    column: 'right',
+    ball_ground_proximity: 'near_ground',
+  })
+  const model = mockSdk([
+    reportedMidLeft,
+    reportedMidLeft,
+    reportedMidLeft,
+    mirroredMidRight,
+  ])
+
+  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+
+  assert.equal(result.status, 'CLEAR')
+  assert.equal(result.row, 'bottom')
+  assert.equal(result.column, 'left')
+  assert.equal(result.heightCorrected, true)
+  assert.equal(result.evidence.initial.counts.heightCorrected, 3)
+  assert.equal(result.evidence.mirrorChecks[0].observedRow, 'bottom')
+  assert.equal(result.evidence.mirrorChecks[0].heightCorrected, true)
+  assert.equal(model.calls(), 4)
+})
+
 test('a chirality-only mirror mismatch keeps an honest direction-neutral side zone', async () => {
   // Reproduces PlayerA_test_1: three mid/right observations followed by a
   // mirrored observation that incorrectly remains mid/right.
@@ -178,6 +210,32 @@ test('direction-neutral side placement receives the same score without claiming 
   assert.equal(scored.scores.placement.directionVerified, false)
   assert.match(scored.scores.placement.explanation, /toward one side/i)
   assert.doesNotMatch(scored.scores.placement.explanation, /left|right/i)
+})
+
+test('placement copy is composed from the corrected zone instead of raw model prose', () => {
+  const scored = scoring.finalizeScore({
+    skill: { score: 4, explanation: 'A basic strike.' },
+    difficulty: { score: 3, explanation: 'An open attempt.' },
+    aesthetic: { score: 3, explanation: 'A straightforward finish.' },
+  }, {
+    status: 'CLEAR',
+    row: 'bottom',
+    column: 'left',
+    explanation: 'The full goal is visible and the ball is waist high on the left.',
+    heightCorrected: true,
+  }, {})
+
+  assert.equal(scored.scores.placement.zone, 'bottom_left')
+  assert.equal(scored.scores.placement.heightCorrected, true)
+  assert.equal(scored.scores.placement.explanation, 'The ball went in low by the left post.')
+  assert.doesNotMatch(scored.scores.placement.explanation, /waist|full goal/i)
+})
+
+test('judge rubric excludes placement from the other criteria and anchors the full scale', () => {
+  assert.match(scoring.JUDGE_RUBRIC, /Placement is scored separately/i)
+  assert.match(scoring.JUDGE_RUBRIC, /Use the full scale conservatively/i)
+  assert.match(scoring.JUDGE_RUBRIC, /Missing evidence earns no extra credit/i)
+  assert.doesNotMatch(scoring.JUDGE_RUBRIC, /settled finishing spot/i)
 })
 
 test('a technical placement call is retried on the same evidence', async () => {

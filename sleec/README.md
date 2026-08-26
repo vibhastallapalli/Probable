@@ -34,6 +34,25 @@ The formal policy does not need another branch for this representation:
 `placementResolved` is true only after the direction-neutral class itself has
 the required invariant evidence. No exact left/right claim is assigned.
 
+## Ground-reference consistency
+
+Each placement observation now commits to the ball's proximity to the goal's
+ground level before choosing a row. When the same usable observation says the
+ball is `near_ground` but labels it `mid` or `top`, JavaScript retains the raw
+answer for the evidence trace and corrects the contradictory row to `bottom`.
+It does not use this rule to promote an unclear observation, recover a missing
+ball or goal, or bypass the repeated-frame and mirror checks.
+
+The final placement sentence is composed from the verified policy result, so
+discarded raw wording cannot reintroduce the wrong row. Placement also remains
+separate from skill, difficulty, and aesthetic judging; an incorrect placement
+observation cannot be repeated across all four score explanations.
+
+This is another implementation-level refinement inside the formal
+`placementResolved` state. The SLEEC file remains unchanged because no new
+runtime outcome is introduced: the row either has consistent supporting
+evidence and may resolve, or the existing unresolved fallback applies.
+
 The implementation corresponding to those states lives in:
 
 - `src/main/placement-policy.js` — evidence thresholds, recovery selection,

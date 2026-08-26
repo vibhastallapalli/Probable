@@ -53,6 +53,7 @@ function assessPlacementEvidence (votes, opts = {}) {
     usable: 0,
     rowAgreement: 0,
     columnAgreement: 0,
+    heightCorrected: safeVotes.filter((v) => v.heightCorrected === true).length,
   }
 
   const issues = []

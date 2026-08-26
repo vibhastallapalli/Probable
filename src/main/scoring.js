@@ -32,10 +32,12 @@ const {
 // model commits to what it can actually see before it judges anything:
 //
 //   Stage 1 (placement readiness, one image per call): each tail image reports
-//   ball visibility, full-goal visibility, ball/goal relation, row, and
-//   column. At least two usable observations and a strict majority are
-//   required. A failed first attempt gets one targeted retry with unused
-//   nearby moments. A left/right verdict is checked on a mirrored image. If
+//   ball visibility, full-goal visibility, ball/goal relation, ground
+//   proximity, row, and column. Ground proximity is committed before the row,
+//   so a ball visibly on the turf cannot survive as a middle-height answer.
+//   At least two usable observations and a strict majority are required. A
+//   failed first attempt gets one targeted retry with unused nearby moments.
+//   A left/right verdict is checked on a mirrored image. If
 //   the model preserves every visual invariant and still sees an off-centre
 //   finish but cannot flip left/right reliably, only the direction is
 //   discarded and the result becomes a direction-neutral side zone. A loss
@@ -45,11 +47,9 @@ const {
 //   goal, how fast the shot travels, and the kicking foot at contact. No
 //   opinions, no scores, no football knowledge.
 //   Stage 3 (judge, text only): score skill/difficulty/aesthetic from the
-//   stage-2 description plus the stage-1 zone, handed over as a settled fact
-//   so all three criteria reason about the same finishing spot instead of
-//   each re-guessing it from the description. Every point still traces back
-//   to something the model claimed to see rather than to what usually
-//   happens in highlights.
+//   stage-2 description. Placement is deliberately excluded because it has
+//   its own separately weighted score; a bad row label must never contaminate
+//   the other three explanations or count more than once.
 //
 // On top of the per-clip passes, a match is decided by a HEAD-TO-HEAD pass
 // (compareHeadToHead): both clips' key frames go into one call and the model
@@ -161,23 +161,36 @@ Score each from 0 to 10:
 - aesthetic: the visual beauty and spectacle of the play — how impressive or
   memorable it looks as a piece of football.
 
-Base every judgment ONLY on what the description says and on the settled
-finishing spot given above it, not on general football knowledge and not on
-what usually happens in highlight clips. If the description does not mention
-defenders or a goalkeeper, treat them as absent and judge difficulty
-accordingly. Where the description reports how far out the shooter was, how
-fast the shot traveled, or what kind of foot contact was made, use those
-reports directly: distance and shot speed belong in the difficulty judgment,
-foot contact and strike type in the skill judgment.
+Base every judgment ONLY on what the description says, not on general
+football knowledge and not on what usually happens in highlight clips.
+Placement is scored separately. Do not use or mention the ball's finishing
+height, side, corner, or whether it entered the goal when scoring these three
+criteria. If the description does not mention defenders or a goalkeeper,
+treat them as absent and judge difficulty accordingly. Where the description
+reports how far out the shooter was, how fast the shot traveled, or what kind
+of foot contact was made, use those reports directly: distance and shot speed
+belong only in the difficulty judgment; foot contact and strike type belong
+only in the skill judgment.
+
+Use the full scale conservatively instead of treating 7 as the default:
+- 0 to 2: failed, badly mishit, or almost no positive evidence for this criterion
+- 3 to 4: basic and ordinary, with little difficulty, technique, or flair
+- 5 to 6: solid and clearly competent, but common rather than exceptional
+- 7 to 8: distinctly difficult, polished, or memorable, supported by explicit evidence
+- 9 to 10: genuinely exceptional or rare; award this only when the description
+  reports extraordinary evidence for that exact criterion
+
+Missing evidence earns no extra credit. A straightforward kick from an open
+position with no dribble, defender, unusual body position, or special ball
+movement is ordinary rather than spectacular, even when it goes in cleanly.
 
 For each criterion write a short (one to two sentence) explanation. These
 explanations are shown to the players to justify the result, and each one
 must read like a person casually describing the shot to a friend — plain
 everyday football language only. Never use the words frame, frames, grid,
-row, column, or cell. Never describe how the clip was analyzed, and never
-say that something could not be verified, was unclear, or was assumed. If
-you are not sure about a detail, give your best natural read of it in plain
-words instead of talking about the uncertainty.
+row, column, or cell. Never describe how the clip was analyzed. Do not fill
+missing details with a confident guess; simply explain the score using the
+facts that were actually reported.
 
 Each explanation must cover its own ground, and no two of them may say the
 same thing:
@@ -192,17 +205,6 @@ same thing:
 Ground rules: mention only people, objects, and events the description
 reports. Never invent players, a goalkeeper, defenders, or a crowd it does
 not mention, and do not fill gaps with general football knowledge.`
-
-// The zone is decided once by the placement pass and handed to the judge as
-// a settled fact, so skill, difficulty, and aesthetic all reason about the
-// same finishing spot instead of each re-guessing it from the description —
-// four independent guesses used to contradict each other and the placement
-// score.
-function placementFactLine (zone) {
-  return `\n\nOne fact is already settled: the shot went ${PLACEMENT_ZONE_PHRASES[zone]}. ` +
-    'Treat that as exactly where the ball ended up, even if the description ' +
-    'above reads differently, and weigh it when judging all three criteria.'
-}
 
 // Placement pass prompt — sent with ONE tail frame attached per call, so the
 // zone is decided by a pass that can actually see the ball against the goal
@@ -232,6 +234,14 @@ ball_goal_relation — what the visible ball is doing relative to the goal:
 - outside: the ball is visibly outside and not entering the goal
 - unclear: the ball's relationship to the goal cannot be determined
 
+ball_ground_proximity — compare the bottom of the visible ball with the turf
+or the line joining the bottoms of the two goalposts:
+- near_ground: the ball touches that level or has no more than one ball-width
+  of clearly visible space beneath it
+- clear_air: more than one full ball-width of clearly visible space separates
+  the bottom of the ball from that level
+- unclear: the ball or ground reference is not clear enough to compare
+
 Only when the ball is visible, the full goal is visible, and the ball is in or
 entering the goal, report its position as a row and a column. Otherwise answer
 unclear for both row and column.
@@ -241,10 +251,14 @@ see it. Never answer from the shooter's or the goalkeeper's point of view.
 
 row — the ball's height:
 - top: in the top third of the goal, near the crossbar
-- mid: in the middle third, clearly below the crossbar and clearly above
-  the ground
+- mid: in the middle third, with clear air beneath the ball
 - bottom: in the bottom third, on or near the ground
 - unclear: the evidence conditions above were not all satisfied
+
+Consistency rule: if ball_ground_proximity is near_ground, row MUST be
+bottom—never mid or top. A ball that has bounced slightly but remains within
+one ball-width of the goal's ground level is still bottom. Use mid only when
+there is clearly more than one ball-width of empty space below the ball.
 
 column — the ball's side of the goal:
 - left: near the goalpost closer to the LEFT edge of the picture
@@ -364,10 +378,9 @@ const PLACEMENT_ZONES = [
   'bottom_left', 'bottom_center', 'bottom_right',
 ]
 
-// Plain-words rendering of each zone, used wherever a zone is spoken about
-// in player-facing text (the judge's settled-fact line and the placement
-// "why" fallback). Phrased to follow "the ball went ..." / "the shot went
-// ...", so internal zone keys never leak into what players read.
+// Plain-words rendering of each zone, used for the deterministic placement
+// explanation. Phrased to follow "the ball went ...", so internal zone keys
+// never leak into what players read.
 const PLACEMENT_ZONE_PHRASES = {
   top_left: 'into the top left corner',
   top_right: 'into the top right corner',
@@ -406,6 +419,7 @@ const placementField = {
     ball_visibility: { type: 'string', enum: ['visible', 'not_visible', 'unclear'] },
     goal_visibility: { type: 'string', enum: ['full', 'partial', 'not_visible', 'unclear'] },
     ball_goal_relation: { type: 'string', enum: ['in_or_entering', 'outside', 'unclear'] },
+    ball_ground_proximity: { type: 'string', enum: ['near_ground', 'clear_air', 'unclear'] },
     row: { type: 'string', enum: ['top', 'mid', 'bottom', 'unclear'] },
     column: { type: 'string', enum: ['left', 'center', 'right', 'unclear'] },
     explanation: { type: 'string' },
@@ -414,6 +428,7 @@ const placementField = {
     'ball_visibility',
     'goal_visibility',
     'ball_goal_relation',
+    'ball_ground_proximity',
     'row',
     'column',
     'explanation',
@@ -945,12 +960,14 @@ async function scoreClip (frames, metadata = {}) {
   }
   console.log(`[qvac] clip description:\n${description}`)
 
-  // Stage 3 — judge skill/difficulty/aesthetic from the description plus the
-  // settled zone (no frames), grammar-constrained to the score schema.
+  // Stage 3 — judge skill/difficulty/aesthetic from the description (no
+  // frames), grammar-constrained to the score schema. Placement is omitted:
+  // it has its own weighted score, and a row error must not leak into every
+  // other criterion.
   const judged = await runCompletion(sdk, modelId, {
     history: [{
       role: 'user',
-      content: JUDGE_PROMPT_PREFIX + description + placementFactLine(zone) + JUDGE_RUBRIC,
+      content: JUDGE_PROMPT_PREFIX + description + JUDGE_RUBRIC,
     }],
     responseFormat: {
       type: 'json_schema',
@@ -967,6 +984,7 @@ async function scoreClip (frames, metadata = {}) {
       evidence: placement.evidence,
       directionVerified: placement.directionVerified,
       directionNeutral: placement.directionNeutral,
+      heightCorrected: placement.heightCorrected,
     },
     ...baseMeta,
   })
@@ -1141,7 +1159,9 @@ async function collectPlacementVotes (sdk, modelId, frames) {
     console.log(
       `[qvac] placement evidence ${path.basename(frame)}: ` +
       `ball=${vote.ball_visibility} goal=${vote.goal_visibility} ` +
-      `relation=${vote.ball_goal_relation} row=${vote.row} column=${vote.column}`
+      `relation=${vote.ball_goal_relation} ground=${vote.ball_ground_proximity} ` +
+      `row=${vote.row}${vote.heightCorrected ? ` (reported=${vote.reportedRow})` : ''} ` +
+      `column=${vote.column}`
     )
   }
   return votes
@@ -1154,7 +1174,7 @@ async function askPlacementWithRetry (sdk, modelId, frame) {
   let lastError
   for (let attempt = 1; attempt <= PLACEMENT_CALL_ATTEMPTS; attempt++) {
     try {
-      return parseScore(await askPlacement(sdk, modelId, frame))
+      return normalizePlacementVote(parseScore(await askPlacement(sdk, modelId, frame)))
     } catch (err) {
       lastError = err
       console.warn(
@@ -1170,6 +1190,37 @@ async function askPlacementWithRetry (sdk, modelId, frame) {
   )
   error.code = 'PLACEMENT_ANALYSIS_ERROR'
   throw error
+}
+
+// The small VLM can identify that a ball is sitting on the turf while still
+// emitting the contradictory word `mid`. Ground proximity is a simpler visual
+// commitment made before row, so resolve only that explicit contradiction in
+// code. This never turns an unclear row into a score and never overrides a
+// ball/goal/shot-moment failure.
+function normalizePlacementVote (vote) {
+  const safe = vote && typeof vote === 'object' ? vote : {}
+  const reportedRow = ['top', 'mid', 'bottom', 'unclear'].includes(safe.row)
+    ? safe.row
+    : 'unclear'
+  const ground = ['near_ground', 'clear_air', 'unclear'].includes(safe.ball_ground_proximity)
+    ? safe.ball_ground_proximity
+    : 'unclear'
+  const hasUsableSceneEvidence =
+    safe.ball_visibility === 'visible' &&
+    safe.goal_visibility === 'full' &&
+    safe.ball_goal_relation === 'in_or_entering'
+  const heightCorrected =
+    hasUsableSceneEvidence &&
+    ground === 'near_ground' &&
+    (reportedRow === 'mid' || reportedRow === 'top')
+
+  return {
+    ...safe,
+    ball_ground_proximity: ground,
+    reportedRow,
+    row: heightCorrected ? 'bottom' : reportedRow,
+    heightCorrected,
+  }
 }
 
 async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
@@ -1259,7 +1310,8 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
   const passed = exactDirectionPassed || directionNeutral
 
   console.log(
-    `[qvac] placement mirror check: row=${mirrored.row} ` +
+    `[qvac] placement mirror check: ground=${mirrored.ball_ground_proximity} ` +
+    `row=${mirrored.row}${mirrored.heightCorrected ? ` (reported=${mirrored.reportedRow})` : ''} ` +
     `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})` +
     (directionNeutral ? ' — exact side unverified; retaining direction-neutral side' : '')
   )
@@ -1271,6 +1323,8 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
     expectedColumn,
     observedColumn: mirrored.column,
     observedRow: mirrored.row,
+    observedGroundProximity: mirrored.ball_ground_proximity,
+    heightCorrected: mirrored.heightCorrected,
     invariantsPassed,
     directionVerified: exactDirectionPassed,
     directionNeutral,
@@ -1302,6 +1356,9 @@ function resolvedPlacement (status, votes, assessment, evidence) {
     explanation: directionNeutral ? '' : (chosen?.explanation ?? ''),
     directionVerified: !directionNeutral,
     directionNeutral,
+    heightCorrected: votes.some((vote) =>
+      vote.heightCorrected && vote.row === assessment.row
+    ),
     issues: [],
     evidence,
   }
@@ -1321,6 +1378,7 @@ function publicAssessment (assessment) {
       usable: 0,
       rowAgreement: 0,
       columnAgreement: 0,
+      heightCorrected: 0,
     },
     requiredAgreement: Number(assessment?.requiredAgreement) || 2,
     mirrorMismatch: Boolean(assessment?.mirrorMismatch),
@@ -1877,19 +1935,18 @@ function finalizeScore (parsed, placement, meta) {
   if (unclear || !zone) {
     throw new Error('finalizeScore refuses to score unresolved placement evidence')
   }
-  // The model's own words are shown only when the verdict was clear and any
-  // left/right call survived the mirror check. If it returned no natural
-  // explanation, compose one from the already-verified zone.
-  let explanation = String(placement?.explanation ?? '').trim()
-  if (!explanation) {
-    explanation = `The ball went ${PLACEMENT_ZONE_PHRASES[zone]}.`
-  }
+  // Render the verified zone deterministically. The raw VLM sentence often
+  // repeated unsupported details (for example "the full structure is clearly
+  // visible") or kept the pre-correction row word. The policy result—not that
+  // free text—is the evidence-backed placement decision.
+  const explanation = `The ball went ${PLACEMENT_ZONE_PHRASES[zone]}.`
   scores.placement = {
     score: PLACEMENT_ZONE_SCORES[zone],
     zone,
     explanation,
     evidenceStatus: placement.status,
     directionVerified: placement?.directionVerified !== false,
+    heightCorrected: Boolean(placement?.heightCorrected),
   }
 
   warnOnDuplicateExplanations(scores)

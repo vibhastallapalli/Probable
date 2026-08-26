@@ -512,6 +512,9 @@ export default function App () {
           if (result.placementReport?.directionNeutral) {
             emit(`Clip ${side}: mirror preserved row and off-centre placement; exact left/right was not used`)
           }
+          if (result.placementReport?.heightCorrected) {
+            emit(`Clip ${side}: ground-reference check corrected the placement height to low`)
+          }
           // No total in the log on purpose — the Log panel is on screen, and
           // leaking the two numbers there defeats the hidden scorecards.
           emit(`Clip ${side} judged from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
@@ -1283,6 +1286,9 @@ function PredictTab ({ address }) {
       }
       if (result.placementReport?.directionNeutral) {
         pEmit('Mirror preserved row and off-centre placement; exact left/right was not used')
+      }
+      if (result.placementReport?.heightCorrected) {
+        pEmit('Ground-reference check corrected the placement height to low')
       }
       pEmit(`Scored: total ${result.total} of ${MAX_TOTAL} from ${result.frameCount} frames${result.mock ? ' (mock)' : ''}`)
     } catch (err) {

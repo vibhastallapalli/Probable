@@ -17,11 +17,15 @@ const scoring = require('../src/main/scoring')
 Module._load = originalLoad
 
 function vote (overrides = {}) {
+  const shotMoment = overrides.shot_moment ?? 'arrival'
   return {
     ball_visibility: 'visible',
     goal_visibility: 'full',
+    before_ball_goal_relation: shotMoment === 'aftermath'
+      ? 'in_or_entering'
+      : 'outside',
     ball_goal_relation: 'in_or_entering',
-    shot_moment: 'arrival',
+    shot_moment: shotMoment,
     ball_ground_proximity: 'clear_air',
     row: 'top',
     column: 'center',
@@ -32,9 +36,11 @@ function vote (overrides = {}) {
 
 function mockSdk (outputs) {
   let calls = 0
+  const requests = []
   return {
     sdk: {
-      completion: () => {
+      completion: (request) => {
+        requests.push(request)
         const output = outputs[calls++]
         return {
           final: output instanceof Error
@@ -45,6 +51,7 @@ function mockSdk (outputs) {
       deleteCache: async () => ({ success: true }),
     },
     calls: () => calls,
+    requests: () => requests,
   }
 }
 
@@ -59,6 +66,16 @@ test('initial quorum produces a CLEAR placement without recovery', async () => {
   assert.equal(result.column, 'center')
   assert.equal(result.evidence.recovery, null)
   assert.equal(model.calls(), 3)
+  assert.deepEqual(
+    model.requests().map((request) =>
+      request.history[0].attachments.map((attachment) => attachment.path)
+    ),
+    [
+      ['f3.png', 'f4.png'],
+      ['f4.png', 'f5.png'],
+      ['f5.png', 'f6.png'],
+    ]
+  )
 })
 
 test('resolved explanation comes from a usable observation, not a later invalid guess', async () => {
@@ -96,7 +113,10 @@ test('failed initial evidence can become RECOVERED on unused frames', async () =
 
 test('Player A aftermath frames cannot turn a lifted arrival into a bottom placement', async () => {
   const fallenInNet = vote({
-    shot_moment: 'aftermath',
+    // Reproduce the real failure: Qwen reports `arrival` even though both the
+    // before and target images already place the ball in/entering the goal.
+    before_ball_goal_relation: 'in_or_entering',
+    shot_moment: 'arrival',
     ball_ground_proximity: 'near_ground',
     row: 'bottom',
     column: 'side',
@@ -283,7 +303,12 @@ test('clip facts discard invented prose fields and invalid category values', () 
 
   assert.equal(facts.shooter_distance, 'medium')
   assert.equal(facts.shot_speed, 'unclear')
-  assert.equal(facts.kicking_foot, 'right')
+  assert.equal(facts.dribbling, 'none')
+  assert.equal(facts.ball_motion, 'low_driven')
+  assert.equal(facts.kicking_foot, undefined)
+  assert.equal(facts.contact_type, undefined)
+  assert.equal(facts.pressure, undefined)
+  assert.equal(facts.goal_outcome, undefined)
   assert.equal(facts.footwear, undefined)
   assert.equal(facts.both_feet_contacted, undefined)
   assert.equal(facts.story, undefined)
@@ -304,9 +329,12 @@ test('judge receives only normalized non-placement facts', () => {
   })
 
   assert.match(text, /Shooter distance: medium/)
-  assert.match(text, /Contact type: unclear/)
+  assert.match(text, /Dribbling: none/)
   assert.match(text, /Ball motion: rolling/)
-  assert.doesNotMatch(text, /barefoot|footwear|goal outcome|scored/i)
+  assert.doesNotMatch(
+    text,
+    /barefoot|footwear|goal outcome|scored|kicking foot|contact type|pressure|body position/i
+  )
 })
 
 test('a technical placement call is retried on the same evidence', async () => {

@@ -31,10 +31,11 @@ const {
 // Scoring prompts — tune the rubric here. Scoring runs in three stages so the
 // model commits to what it can actually see before it judges anything:
 //
-//   Stage 1 (placement readiness, one image per call): each tail image reports
-//   ball visibility, full-goal visibility, ball/goal relation, whether the
-//   image preserves the arrival rather than its aftermath, ground proximity,
-//   row, and center-versus-side. Aftermath images cannot vote on entry height.
+//   Stage 1 (placement readiness, one ordered image pair per call): each target
+//   image reports ball visibility, full-goal visibility, ball/goal relation,
+//   whether the before→target transition preserves arrival rather than its
+//   aftermath, ground proximity, row, and center-versus-side. Aftermath images
+//   cannot vote on entry height.
 //   Ground proximity is committed before the row, so a ball visibly on the
 //   turf cannot survive as a middle-height answer. At least two usable
 //   observations and a strict majority are required. A failed first attempt
@@ -43,9 +44,8 @@ const {
 //   is never claimed because both sides score identically and the model's
 //   chirality label proved unreliable on the real clips.
 //   Stage 2 (observe, frames attached): report only a closed set of visible
-//   facts, including shooter distance, shot speed, contact, pressure, and ball
-//   motion. Unsupported details become `unclear`; free-form storytelling is
-//   forbidden.
+//   facts: shooter distance, shot speed, dribbling, and ball motion.
+//   Unsupported details become `unclear`; free-form storytelling is forbidden.
 //   Stage 3 (judge, text only): score skill/difficulty/aesthetic from those
 //   stage-2 facts. Placement is deliberately excluded because it has
 //   its own separately weighted score; a bad row label must never contaminate
@@ -124,21 +124,14 @@ Rules for the categories:
 - shot_speed: slow, medium, fast, or unclear from distance covered between
   consecutive moments; do not call ordinary movement fast merely because the
   ball moved
-- kicking_foot: left or right only when the contact foot is unambiguous;
-  otherwise unclear
-- contact_type: side_foot, laces, toe_poke, volley, header, other, or unclear;
-  ordinary leg motion is not proof of a contact type
 - dribbling: none, simple, skill_move, or unclear
-- pressure: none, defender, goalkeeper, both, or unclear; people outside the
-  play do not count as pressure
-- body_position: balanced, awkward, acrobatic, or unclear
 - ball_motion: rolling, low_driven, lofted, curved, straight, or unclear
-- goal_outcome: scored, not_scored, or unclear from the sequence
 
-Do not report clothing, footwear, identity, scenery, praise, or free-form
-storytelling. In particular, never invent that a player is barefoot or that
-both feet contacted the ball. Choose unclear whenever the required visual
-fact is not actually visible.
+Do not report a kicking foot, contact type, defenders, pressure, body position,
+goal outcome, clothing, footwear, identity, scenery, praise, or free-form
+storytelling. Real-clip testing showed that those details were not reliable
+enough to use as scoring evidence. Choose unclear whenever one of the four
+required visual facts is not actually visible.
 ${GROUNDING_RULES}`
 
 const JUDGE_PROMPT_PREFIX = `You are judging a short football (soccer) highlight clip for a friendly wager.
@@ -155,25 +148,20 @@ of the year) criteria.
 
 Score each from 0 to 10:
 
-- skill: technical execution and control — first touch, dribbling, striking
-  technique, body coordination, and the cleanness of the movement.
+- skill: visible ball control and dribbling before the strike.
 - difficulty: how hard the action was to pull off — distance from goal,
-  angle, shot speed, pressure from defenders, body position, and
-  improvisation required.
+  and shot speed.
 - aesthetic: the visual beauty and spectacle of the play — how impressive or
-  memorable it looks as a piece of football.
+  memorable its reported ball motion and dribbling look.
 
 Base every judgment ONLY on what the fact list says, not on general
 football knowledge and not on what usually happens in highlight clips.
 Placement is scored separately. Do not use or mention the ball's finishing
 height, side, corner, or whether it entered the goal when scoring these three
-criteria. If pressure is "none", treat defenders and a goalkeeper as absent
-and judge difficulty accordingly; if it is "unclear", do not assume either
-presence or absence. Where the fact list
-reports how far out the shooter was, how fast the shot traveled, or what kind
-of foot contact was made, use those reports directly: distance and shot speed
-belong only in the difficulty judgment; foot contact and strike type belong
-only in the skill judgment.
+criteria. The fact list intentionally contains no evidence about kicking foot,
+contact type, defenders, pressure, body position, or goal outcome. Never infer
+or mention any of those. Use distance and shot speed only for difficulty,
+dribbling only for skill, and ball motion plus dribbling only for aesthetic.
 
 Use the full scale conservatively instead of treating 7 as the default:
 - 0 to 2: failed, badly mishit, or almost no positive evidence for this criterion
@@ -183,9 +171,9 @@ Use the full scale conservatively instead of treating 7 as the default:
 - 9 to 10: genuinely exceptional or rare; award this only when the fact list
   reports extraordinary evidence for that exact criterion
 
-Missing evidence earns no extra credit. A straightforward kick from an open
-position with no dribble, defender, unusual body position, or special ball
-movement is ordinary rather than spectacular, even when it goes in cleanly.
+Missing evidence earns no extra credit. A straightforward attempt with no
+dribble and ordinary rolling, straight, or low-driven motion is ordinary
+rather than spectacular.
 
 For each criterion write a short (one to two sentence) explanation. These
 explanations are shown to the players to justify the result, and each one
@@ -197,25 +185,27 @@ facts that were actually reported.
 
 Each explanation must cover its own ground, and no two of them may say the
 same thing:
-- skill: talk specifically about the player's touch, technique, and control
-  of the ball, including the kind of contact on the strike if it is
-  described.
-- difficulty: talk specifically about how far out the shot was taken, the
-  angle, how fast the ball traveled, and any pressure or defenders.
-- aesthetic: talk specifically about the overall spectacle and flair — what
-  makes the play striking or plain to watch.
+- skill: talk only about the reported dribbling and visible ball control. If
+  dribbling is none or unclear, keep the score conservative and say the clip
+  does not establish an extra control move.
+- difficulty: talk only about how far out the shot was taken and how fast the
+  ball traveled.
+- aesthetic: talk only about the reported ball motion and dribbling — what
+  makes that motion striking or plain to watch.
 
 Ground rules: mention only people, objects, and events the fact list
 reports. Never invent players, a goalkeeper, defenders, or a crowd it does
 not mention, and do not fill gaps with general football knowledge.`
 
-// Placement pass prompt — sent with ONE tail frame attached per call, so the
-// zone is decided by a pass that can actually see the ball against the goal
-// frame, one concrete image at a time. The judge pass never picks the zone;
-// it can't see anything.
-const PLACEMENT_PROMPT = `You are looking at one still frame from the end of a short football (soccer)
-clip, at or just after the moment a shot reaches the goal. The ball may be in
-flight, crossing the line, or already in the net.
+// Placement pass prompt — sent with an ordered before/target image pair. A
+// single still could not distinguish a lifted ball entering high from the same
+// ball later falling to the turf in the net; the preceding image supplies the
+// temporal evidence needed to make that distinction. The judge pass never
+// picks the zone.
+const PLACEMENT_PROMPT = `You are looking at TWO ordered still frames from a short football (soccer) clip.
+IMAGE 1 comes immediately before IMAGE 2. Answer every visual field for IMAGE
+2, using IMAGE 1 only to determine whether IMAGE 2 shows the incoming shot or
+what happened after it entered. Do not describe or score IMAGE 1 separately.
 
 First report the visual evidence. These fields are separate so that a missing
 ball, an incomplete goal, and a disagreement about placement never get treated
@@ -232,17 +222,28 @@ goal_visibility — whether the goal mouth can be used as a complete reference:
 - not_visible: no usable goal is visible
 - unclear: you cannot tell whether the complete goal frame is present
 
-ball_goal_relation — what the visible ball is doing relative to the goal:
+before_ball_goal_relation — where the visible ball is in IMAGE 1:
+- in_or_entering: the ball is already inside, crossing into, or clearly
+  entering the goal
+- outside: the ball is visibly outside and not yet entering the goal
+- unclear: the ball's relationship to the goal cannot be determined
+
+ball_goal_relation — what the visible ball is doing in IMAGE 2:
 - in_or_entering: the ball is inside, crossing into, or clearly entering the goal
 - outside: the ball is visibly outside and not entering the goal
 - unclear: the ball's relationship to the goal cannot be determined
 
-shot_moment — whether this still preserves the ball's incoming height:
-- arrival: the ball is approaching, crossing, or only just past the goal line
-  on its incoming path, so its current height represents where the shot enters
-- aftermath: the ball is already resting, rolling, falling, or bouncing in the
-  net after entry; its current height does NOT reveal where it entered
-- unclear: one still is not enough to distinguish arrival from aftermath
+shot_moment — whether IMAGE 2 preserves the ball's incoming height:
+- arrival: IMAGE 1 shows the ball outside or approaching the goal and IMAGE 2
+  shows it reaching, crossing, or only just passing the goal line on the same
+  incoming path
+- aftermath: the ball is already inside the goal in IMAGE 1 and remains,
+  falls, rolls, rests, or bounces inside the goal in IMAGE 2
+- unclear: the two images do not establish which of those transitions occurred
+
+Do not call IMAGE 2 arrival merely because its ball is inside the goal. If the
+ball was already inside in IMAGE 1, IMAGE 2 is aftermath and its current height
+cannot reveal the entry height.
 
 ball_ground_proximity — compare the bottom of the visible ball with the turf
 or the line joining the bottoms of the two goalposts:
@@ -252,11 +253,11 @@ or the line joining the bottoms of the two goalposts:
   the bottom of the ball from that level
 - unclear: the ball or ground reference is not clear enough to compare
 
-Only when the ball is visible, the full goal is visible, the ball is in or
-entering the goal, AND shot_moment is arrival, report its position as a row
-and a column. If shot_moment is aftermath or unclear, answer unclear for
-ball_ground_proximity, row, and column. Never use a ball lying or bouncing in
-the net to reconstruct an earlier entry height from one still.
+Only when the ball is visible in IMAGE 2, the full goal is visible, the ball is
+in or entering the goal, AND shot_moment is arrival, report its position as a
+row and a column. If shot_moment is aftermath or unclear, answer unclear for
+ball_ground_proximity, row, and column. Never use a ball lying, falling, or
+bouncing in the net to reconstruct an earlier entry height.
 
 Everything is from the CAMERA'S point of view — the picture exactly as you
 see it. Never answer from the shooter's or the goalkeeper's point of view.
@@ -429,6 +430,7 @@ const placementField = {
   properties: {
     ball_visibility: { type: 'string', enum: ['visible', 'not_visible', 'unclear'] },
     goal_visibility: { type: 'string', enum: ['full', 'partial', 'not_visible', 'unclear'] },
+    before_ball_goal_relation: { type: 'string', enum: ['in_or_entering', 'outside', 'unclear'] },
     ball_goal_relation: { type: 'string', enum: ['in_or_entering', 'outside', 'unclear'] },
     shot_moment: { type: 'string', enum: ['arrival', 'aftermath', 'unclear'] },
     ball_ground_proximity: { type: 'string', enum: ['near_ground', 'clear_air', 'unclear'] },
@@ -439,6 +441,7 @@ const placementField = {
   required: [
     'ball_visibility',
     'goal_visibility',
+    'before_ball_goal_relation',
     'ball_goal_relation',
     'shot_moment',
     'ball_ground_proximity',
@@ -456,13 +459,8 @@ const placementField = {
 const CLIP_FACT_ENUMS = Object.freeze({
   shooter_distance: ['close', 'medium', 'long', 'unclear'],
   shot_speed: ['slow', 'medium', 'fast', 'unclear'],
-  kicking_foot: ['left', 'right', 'unclear'],
-  contact_type: ['side_foot', 'laces', 'toe_poke', 'volley', 'header', 'other', 'unclear'],
   dribbling: ['none', 'simple', 'skill_move', 'unclear'],
-  pressure: ['none', 'defender', 'goalkeeper', 'both', 'unclear'],
-  body_position: ['balanced', 'awkward', 'acrobatic', 'unclear'],
   ball_motion: ['rolling', 'low_driven', 'lofted', 'curved', 'straight', 'unclear'],
-  goal_outcome: ['scored', 'not_scored', 'unclear'],
 })
 
 const CLIP_FACTS_SCHEMA = {
@@ -552,11 +550,12 @@ const SCORE_FIELDS = [...JUDGED_FIELDS, 'placement']
 // local model's context window. Sampling is weighted toward the second half of
 // the clip (see sampleTimestamps), where the shot and ball flight happen.
 const FPS_CEILING = 30
-// Eight samples were too sparse to retain the actual goal-line crossing: the
-// last three could all show the ball after it had fallen in the net. Twelve
-// remains within the Qwen3-VL context budget at the frame-size cap while
-// providing several observations around a 3-second shot's arrival.
-const MIN_ANALYSIS_FRAMES = 12
+// Eight or twelve samples were too sparse to reliably retain two observations
+// around a fast goal-line crossing: the last three could all show the ball
+// after it had fallen in the net. Sixteen remains within the Qwen3-VL context
+// budget at the frame-size cap and is the existing default, so an older
+// QVAC_MAX_FRAMES=8 setting can no longer silently weaken temporal evidence.
+const MIN_ANALYSIS_FRAMES = 16
 const DEFAULT_MAX_FRAMES = Math.max(
   Number(process.env.QVAC_MAX_FRAMES) || 16,
   MIN_ANALYSIS_FRAMES
@@ -574,7 +573,7 @@ const PLACEMENT_FRAME_COUNT = Number(process.env.QVAC_PLACEMENT_FRAMES) || 3
 const PLACEMENT_RECOVERY_FRAME_COUNT =
   Number(process.env.QVAC_PLACEMENT_RECOVERY_FRAMES) || 5
 
-// A failed or malformed single-frame model response is retried once against
+// A failed or malformed ordered-pair model response is retried once against
 // the same evidence. This is a system recovery, not a clip-quality judgment.
 const PLACEMENT_CALL_ATTEMPTS = 2
 
@@ -1138,7 +1137,12 @@ function isWorkerDead (err) {
 //   UNRESOLVED with an evidence report.
 async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
   const initialFrames = frames.slice(-PLACEMENT_FRAME_COUNT)
-  const initialVotes = await collectPlacementVotes(sdk, modelId, initialFrames)
+  const initialVotes = await collectPlacementVotes(
+    sdk,
+    modelId,
+    initialFrames,
+    frames
+  )
   const failedMirrorFrames = new Set()
   const mirrorChecks = []
 
@@ -1165,7 +1169,12 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
     initial.assessment.issues,
     PLACEMENT_RECOVERY_FRAME_COUNT
   )
-  const recoveryVotes = await collectPlacementVotes(sdk, modelId, recoveryFrames)
+  const recoveryVotes = await collectPlacementVotes(
+    sdk,
+    modelId,
+    recoveryFrames,
+    frames
+  )
   const frameOrder = new Map(frames.map((frame, index) => [frame, index]))
   const combinedVotes = [...initialVotes, ...recoveryVotes]
     .sort((a, b) => (frameOrder.get(a.frame) ?? 0) - (frameOrder.get(b.frame) ?? 0))
@@ -1204,15 +1213,26 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
   }
 }
 
-async function collectPlacementVotes (sdk, modelId, frames) {
+async function collectPlacementVotes (sdk, modelId, frames, allFrames = frames) {
   const votes = []
   for (const frame of frames) {
-    const vote = await askPlacementWithRetry(sdk, modelId, frame)
-    votes.push({ frame, ...vote })
+    const index = allFrames.indexOf(frame)
+    // Runtime extraction always supplies many frames, but duplicate the target
+    // as a safe fallback for a synthetic one-frame caller. The prompt then has
+    // no temporal basis and should answer `unclear` rather than invent motion.
+    const contextFrame = index > 0 ? allFrames[index - 1] : frame
+    const vote = await askPlacementWithRetry(
+      sdk,
+      modelId,
+      frame,
+      contextFrame
+    )
+    votes.push({ frame, contextFrame, ...vote })
     console.log(
-      `[qvac] placement evidence ${path.basename(frame)}: ` +
+      `[qvac] placement evidence ${path.basename(contextFrame)} -> ${path.basename(frame)}: ` +
       `ball=${vote.ball_visibility} goal=${vote.goal_visibility} ` +
-      `relation=${vote.ball_goal_relation} moment=${vote.shot_moment} ` +
+      `transition=${vote.before_ball_goal_relation}->${vote.ball_goal_relation} ` +
+      `moment=${vote.shot_moment}${vote.momentCorrected ? ` (reported=${vote.reportedShotMoment})` : ''} ` +
       `ground=${vote.ball_ground_proximity} ` +
       `row=${vote.row}${vote.heightCorrected ? ` (reported=${vote.reportedRow})` : ''} ` +
       `column=${vote.column}`
@@ -1221,14 +1241,19 @@ async function collectPlacementVotes (sdk, modelId, frames) {
   return votes
 }
 
-// Retry a technical/model-output failure once against the exact same frame.
+// Retry a technical/model-output failure once against the exact same pair.
 // If both attempts fail, the error propagates as a system failure; it is never
 // turned into a claim about clip quality.
-async function askPlacementWithRetry (sdk, modelId, frame) {
+async function askPlacementWithRetry (sdk, modelId, frame, contextFrame = frame) {
   let lastError
   for (let attempt = 1; attempt <= PLACEMENT_CALL_ATTEMPTS; attempt++) {
     try {
-      return normalizePlacementVote(parseScore(await askPlacement(sdk, modelId, frame)))
+      return normalizePlacementVote(parseScore(await askPlacement(
+        sdk,
+        modelId,
+        contextFrame,
+        frame
+      )))
     } catch (err) {
       lastError = err
       console.warn(
@@ -1253,9 +1278,25 @@ async function askPlacementWithRetry (sdk, modelId, frame) {
 // ball/goal/shot-moment failure.
 function normalizePlacementVote (vote) {
   const safe = vote && typeof vote === 'object' ? vote : {}
-  const shotMoment = ['arrival', 'aftermath', 'unclear'].includes(safe.shot_moment)
+  const reportedShotMoment = ['arrival', 'aftermath', 'unclear'].includes(safe.shot_moment)
     ? safe.shot_moment
     : 'unclear'
+  const relationValues = ['in_or_entering', 'outside', 'unclear']
+  const beforeRelation = relationValues.includes(safe.before_ball_goal_relation)
+    ? safe.before_ball_goal_relation
+    : 'unclear'
+  const targetRelation = relationValues.includes(safe.ball_goal_relation)
+    ? safe.ball_goal_relation
+    : 'unclear'
+  // Derive temporal stage from two independently committed spatial facts.
+  // The real model called an in-goal→in-goal transition `arrival`; trusting
+  // that label recreated the exact Player A aftermath bug. A conservative
+  // transition table is auditable and cannot be overridden by the prose label.
+  const shotMoment = beforeRelation === 'outside' && targetRelation === 'in_or_entering'
+    ? 'arrival'
+    : beforeRelation === 'in_or_entering' && targetRelation === 'in_or_entering'
+      ? 'aftermath'
+      : 'unclear'
   const reportedRow = ['top', 'mid', 'bottom', 'unclear'].includes(safe.row)
     ? safe.row
     : 'unclear'
@@ -1272,7 +1313,7 @@ function normalizePlacementVote (vote) {
   const hasUsableSceneEvidence =
     safe.ball_visibility === 'visible' &&
     safe.goal_visibility === 'full' &&
-    safe.ball_goal_relation === 'in_or_entering' &&
+    targetRelation === 'in_or_entering' &&
     shotMoment === 'arrival'
   const heightCorrected =
     hasUsableSceneEvidence &&
@@ -1282,6 +1323,9 @@ function normalizePlacementVote (vote) {
 
   return {
     ...safe,
+    before_ball_goal_relation: beforeRelation,
+    ball_goal_relation: targetRelation,
+    reportedShotMoment,
     shot_moment: shotMoment,
     ball_ground_proximity: hasUsableSceneEvidence ? ground : 'unclear',
     reportedRow,
@@ -1292,6 +1336,7 @@ function normalizePlacementVote (vote) {
     column: hasUsableSceneEvidence ? reportedColumn : 'unclear',
     heightCorrected,
     aftermathDiscarded,
+    momentCorrected: reportedShotMoment !== shotMoment,
   }
 }
 
@@ -1355,7 +1400,8 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
   const mirrored = await askPlacementWithRetry(
     sdk,
     modelId,
-    await flipFrame(decider.frame)
+    await flipFrame(decider.frame),
+    await flipFrame(decider.contextFrame || decider.frame)
   )
   // Center-versus-side is invariant under a horizontal flip. Exact direction
   // is intentionally never requested or displayed because a correctly
@@ -1372,7 +1418,9 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
   const passed = invariantsPassed
 
   console.log(
-    `[qvac] placement mirror check: moment=${mirrored.shot_moment} ` +
+    `[qvac] placement mirror check: ` +
+    `transition=${mirrored.before_ball_goal_relation}->${mirrored.ball_goal_relation} ` +
+    `moment=${mirrored.shot_moment}${mirrored.momentCorrected ? ` (reported=${mirrored.reportedShotMoment})` : ''} ` +
     `ground=${mirrored.ball_ground_proximity} ` +
     `row=${mirrored.row}${mirrored.heightCorrected ? ` (reported=${mirrored.reportedRow})` : ''} ` +
     `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})`
@@ -1447,13 +1495,16 @@ function publicAssessment (assessment) {
   }
 }
 
-// One single-frame placement question, grammar-locked to the row/column enums.
-function askPlacement (sdk, modelId, framePath) {
+// One ordered-pair placement question, grammar-locked to the row/column enums.
+function askPlacement (sdk, modelId, contextFramePath, targetFramePath) {
   return runCompletion(sdk, modelId, {
     history: [{
       role: 'user',
       content: PLACEMENT_PROMPT,
-      attachments: [{ path: framePath }],
+      attachments: [
+        { path: contextFramePath },
+        { path: targetFramePath },
+      ],
     }],
     responseFormat: {
       type: 'json_schema',
@@ -1970,20 +2021,15 @@ function humanizeFact (value) {
   return String(value).replaceAll('_', ' ')
 }
 
-// The judge receives only these normalized facts. Goal outcome is kept in the
-// diagnostic log but intentionally omitted here: placement has its own visual
-// gate and score, so an independent outcome guess must not contaminate skill,
-// difficulty, or aesthetic.
+// The judge receives only the deliberately narrow set of normalized facts.
+// Placement and the unreliable contact/pressure categories are absent by
+// construction, so they cannot contaminate the other three criteria.
 function clipFactsForJudge (facts) {
   const safe = normalizeClipFacts(facts)
   const labels = {
     shooter_distance: 'Shooter distance',
     shot_speed: 'Shot speed',
-    kicking_foot: 'Kicking foot',
-    contact_type: 'Contact type',
     dribbling: 'Dribbling',
-    pressure: 'Pressure',
-    body_position: 'Body position',
     ball_motion: 'Ball motion',
   }
   return Object.entries(labels)

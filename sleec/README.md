@@ -39,11 +39,14 @@ exact left/right claim.
 
 The ball's position after a goal is not necessarily its entry position: a
 lifted finish can fall, bounce, or settle near the turf. Each observation now
-classifies the sampled moment as `arrival`, `aftermath`, or `unclear`. Only an
-`arrival` observation may vote on row and center-versus-side. An initial set
-containing aftermath evidence triggers the same one bounded recovery attempt
-on earlier unused moments; if two supported arrival observations still cannot
-be found, placement stays unresolved.
+sees an ordered before→target image pair. Qwen reports the ball/goal relation
+for both images, then JavaScript derives `arrival`, `aftermath`, or `unclear`
+from that transition. If the ball was already inside in the before image, the
+target is aftermath and cannot vote on row or center-versus-side—even if
+Qwen's separate moment label says `arrival`. An
+initial set containing aftermath evidence triggers the same one bounded
+recovery attempt on earlier unused moments; if two supported arrival
+observations still cannot be found, placement stays unresolved.
 
 ## Ground-reference consistency
 
@@ -59,10 +62,12 @@ discarded raw wording cannot reintroduce the wrong row. Placement also remains
 separate from skill, difficulty, and aesthetic judging; an incorrect placement
 observation cannot be repeated across all four score explanations.
 
-The later observation pass is grammar-constrained to closed categories such
-as distance, speed, contact type, pressure, and ball motion. Extra prose and
-unsupported details are discarded before judging, and placement outcome is
-not passed into the other three criteria.
+The later observation pass is grammar-constrained to four closed categories:
+distance, speed, dribbling, and ball motion. Real-clip tests showed that
+kicking foot, contact type, pressure, body position, and goal-outcome labels
+were still hallucinated even in JSON, so they are not passed into judging.
+Extra prose is discarded, and placement outcome is not passed into the other
+three criteria.
 
 This is another implementation-level refinement inside the formal
 `placementResolved` state. The SLEEC file remains unchanged because no new

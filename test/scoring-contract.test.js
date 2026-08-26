@@ -16,22 +16,40 @@ Module._load = function (request, parent, isMain) {
 const scoring = require('../src/main/scoring')
 Module._load = originalLoad
 
-function vote (overrides = {}) {
-  const shotMoment = overrides.shot_moment ?? 'arrival'
+function observation (overrides = {}) {
   return {
     ball_visibility: 'visible',
     goal_visibility: 'full',
-    before_ball_goal_relation: shotMoment === 'aftermath'
-      ? 'in_or_entering'
-      : 'outside',
     ball_goal_relation: 'in_or_entering',
-    shot_moment: shotMoment,
     ball_ground_proximity: 'clear_air',
     row: 'top',
     column: 'center',
     explanation: 'The ball went in high through the middle.',
     ...overrides,
   }
+}
+
+function outside (overrides = {}) {
+  return observation({
+    ball_goal_relation: 'outside',
+    ball_ground_proximity: 'unclear',
+    row: 'unclear',
+    column: 'unclear',
+    explanation: 'The ball is still outside the goal.',
+    ...overrides,
+  })
+}
+
+function missing (overrides = {}) {
+  return observation({
+    ball_visibility: 'not_visible',
+    ball_goal_relation: 'unclear',
+    ball_ground_proximity: 'unclear',
+    row: 'unclear',
+    column: 'unclear',
+    explanation: 'The ball cannot be located.',
+    ...overrides,
+  })
 }
 
 function mockSdk (outputs) {
@@ -41,7 +59,9 @@ function mockSdk (outputs) {
     sdk: {
       completion: (request) => {
         requests.push(request)
-        const output = outputs[calls++]
+        const output = typeof outputs === 'function'
+          ? outputs(request, calls++)
+          : outputs[calls++]
         return {
           final: output instanceof Error
             ? Promise.reject(output)
@@ -55,38 +75,57 @@ function mockSdk (outputs) {
   }
 }
 
+
+function mockObservationSdk (byPath) {
+  const queues = new Map(Object.entries(byPath).map(([frame, value]) => [
+    frame,
+    Array.isArray(value) ? [...value] : [value],
+  ]))
+  return mockSdk((request) => {
+    const frame = request.history[0].attachments?.[0]?.path
+    return queues.get(frame)?.shift()
+  })
+}
+
 const frames = ['f1.png', 'f2.png', 'f3.png', 'f4.png', 'f5.png', 'f6.png']
 
 test('initial quorum produces a CLEAR placement without recovery', async () => {
-  const model = mockSdk([vote(), vote(), vote({ row: 'mid' })])
+  const model = mockObservationSdk({
+    'f2.png': outside(),
+    'f3.png': outside(),
+    'f4.png': observation(),
+    'f5.png': observation(),
+    'f6.png': observation({ row: 'mid' }),
+  })
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.row, 'top')
   assert.equal(result.column, 'center')
   assert.equal(result.evidence.recovery, null)
-  assert.equal(model.calls(), 3)
+  assert.equal(model.calls(), 5)
   assert.deepEqual(
     model.requests().map((request) =>
       request.history[0].attachments.map((attachment) => attachment.path)
     ),
     [
-      ['f4.pair.png'],
-      ['f5.pair.png'],
-      ['f6.pair.png'],
+      ['f2.png'],
+      ['f3.png'],
+      ['f4.png'],
+      ['f5.png'],
+      ['f6.png'],
     ]
   )
 })
 
 test('resolved explanation comes from a usable observation, not a later invalid guess', async () => {
-  const model = mockSdk([
-    vote({ explanation: 'First usable observation.' }),
-    vote({ explanation: 'Second usable observation.' }),
-    vote({
-      ball_visibility: 'not_visible',
-      explanation: 'Invalid later guess.',
-    }),
-  ])
+  const model = mockObservationSdk({
+    'f2.png': outside(),
+    'f3.png': outside(),
+    'f4.png': observation({ explanation: 'First usable observation.' }),
+    'f5.png': observation({ explanation: 'Second usable observation.' }),
+    'f6.png': missing({ explanation: 'Invalid later guess.' }),
+  })
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'CLEAR')
@@ -94,13 +133,14 @@ test('resolved explanation comes from a usable observation, not a later invalid 
 })
 
 test('failed initial evidence can become RECOVERED on unused frames', async () => {
-  const missing = vote({
-    ball_visibility: 'not_visible',
-    ball_goal_relation: 'unclear',
-    row: 'unclear',
-    column: 'unclear',
+  const model = mockObservationSdk({
+    'f1.png': outside(),
+    'f2.png': observation(),
+    'f3.png': observation(),
+    'f4.png': missing(),
+    'f5.png': missing(),
+    'f6.png': missing(),
   })
-  const model = mockSdk([missing, missing, missing, vote(), vote(), vote()])
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'RECOVERED')
@@ -112,25 +152,24 @@ test('failed initial evidence can become RECOVERED on unused frames', async () =
 })
 
 test('Player A aftermath frames cannot turn a lifted arrival into a bottom placement', async () => {
-  const fallenInNet = vote({
-    // Reproduce the real failure: Qwen reports `arrival` even though both the
-    // before and target images already place the ball in/entering the goal.
-    before_ball_goal_relation: 'in_or_entering',
-    shot_moment: 'arrival',
+  const fallenInNet = observation({
     ball_ground_proximity: 'near_ground',
     row: 'bottom',
     column: 'side',
   })
-  const liftedArrival = vote({
-    shot_moment: 'arrival',
+  const liftedArrival = observation({
     ball_ground_proximity: 'clear_air',
     row: 'top',
     column: 'center',
   })
-  const model = mockSdk([
-    fallenInNet, fallenInNet, fallenInNet,
-    liftedArrival, liftedArrival, liftedArrival,
-  ])
+  const model = mockObservationSdk({
+    'f1.png': outside(),
+    'f2.png': liftedArrival,
+    'f3.png': liftedArrival,
+    'f4.png': fallenInNet,
+    'f5.png': fallenInNet,
+    'f6.png': fallenInNet,
+  })
 
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
@@ -143,13 +182,9 @@ test('Player A aftermath frames cannot turn a lifted arrival into a bottom place
 })
 
 test('failed initial and recovery evidence remains UNRESOLVED with feedback', async () => {
-  const missing = vote({
-    ball_visibility: 'not_visible',
-    ball_goal_relation: 'unclear',
-    row: 'unclear',
-    column: 'unclear',
-  })
-  const model = mockSdk(Array(6).fill(missing))
+  const model = mockObservationSdk(Object.fromEntries(
+    frames.map((frame) => [frame, missing()])
+  ))
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'UNRESOLVED')
@@ -159,35 +194,46 @@ test('failed initial and recovery evidence remains UNRESOLVED with feedback', as
 })
 
 test('an off-centre placement must remain side under the mirrored-image check', async () => {
-  const side = vote({ column: 'side' })
-  const model = mockSdk([side, side, side, side])
+  const side = observation({ column: 'side' })
+  const model = mockObservationSdk({
+    'f2.png': outside(),
+    'f3.png': outside(),
+    'f4.png': side,
+    'f5.png': side,
+    'f6.png': side,
+    'f3.mirror.png': outside(),
+    'f5.mirror.png': side,
+  })
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.column, 'side')
   assert.equal(result.directionNeutral, true)
   assert.equal(result.evidence.mirrorChecks[0].passed, true)
-  assert.equal(model.calls(), 4)
+  assert.equal(model.calls(), 7)
 })
 
 test('Player B ground evidence corrects a contradictory mid-height label to bottom-side', async () => {
-  const reportedMidSide = vote({
+  const reportedMidSide = observation({
     row: 'mid',
     column: 'side',
     ball_ground_proximity: 'near_ground',
     explanation: 'The ball appears waist high near a post.',
   })
-  const mirroredMidSide = vote({
+  const mirroredMidSide = observation({
     row: 'mid',
     column: 'side',
     ball_ground_proximity: 'near_ground',
   })
-  const model = mockSdk([
-    reportedMidSide,
-    reportedMidSide,
-    reportedMidSide,
-    mirroredMidSide,
-  ])
+  const model = mockObservationSdk({
+    'f2.png': outside(),
+    'f3.png': outside(),
+    'f4.png': reportedMidSide,
+    'f5.png': reportedMidSide,
+    'f6.png': reportedMidSide,
+    'f3.mirror.png': outside(),
+    'f5.mirror.png': mirroredMidSide,
+  })
 
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
@@ -195,18 +241,23 @@ test('Player B ground evidence corrects a contradictory mid-height label to bott
   assert.equal(result.row, 'bottom')
   assert.equal(result.column, 'side')
   assert.equal(result.heightCorrected, true)
-  assert.equal(result.evidence.initial.counts.heightCorrected, 3)
+  assert.equal(result.evidence.initial.counts.heightCorrected, 2)
   assert.equal(result.evidence.mirrorChecks[0].observedRow, 'bottom')
   assert.equal(result.evidence.mirrorChecks[0].heightCorrected, true)
-  assert.equal(model.calls(), 4)
+  assert.equal(model.calls(), 7)
 })
 
 test('legacy directional words are discarded rather than displayed as exact left or right', async () => {
-  const right = vote({ row: 'mid', column: 'right' })
-  const model = mockSdk([
-    right, right, right,
-    right,
-  ])
+  const right = observation({ row: 'mid', column: 'right' })
+  const model = mockObservationSdk({
+    'f2.png': outside(),
+    'f3.png': outside(),
+    'f4.png': right,
+    'f5.png': right,
+    'f6.png': right,
+    'f3.mirror.png': outside(),
+    'f5.mirror.png': right,
+  })
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'CLEAR')
@@ -217,18 +268,24 @@ test('legacy directional words are discarded rather than displayed as exact left
   assert.equal(result.explanation, '')
   assert.equal(result.evidence.mirrorChecks[0].passed, true)
   assert.equal(result.evidence.mirrorChecks[0].directionNeutral, true)
-  assert.equal(model.calls(), 4)
+  assert.equal(model.calls(), 7)
 })
 
 test('mirror checks that lose side-vs-center evidence remain unresolved', async () => {
-  const side = vote({ column: 'side' })
-  const center = vote({ column: 'center' })
-  const model = mockSdk([
-    side, side, side,
-    center, // initial mirror lost the off-centre class
-    side, side, side,
-    center, // recovery mirror failed the same invariant
-  ])
+  const side = observation({ column: 'side' })
+  const center = observation({ column: 'center' })
+  const model = mockObservationSdk({
+    'f1.png': outside(),
+    'f2.png': outside(),
+    'f3.png': outside(),
+    'f4.png': side,
+    'f5.png': side,
+    'f6.png': side,
+    'f3.mirror.png': outside(),
+    'f5.mirror.png': center, // initial mirror lost the off-centre class
+    'f2.mirror.png': outside(),
+    'f4.mirror.png': center, // combined mirror failed on the other decider
+  })
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'UNRESOLVED')
@@ -236,7 +293,7 @@ test('mirror checks that lose side-vs-center evidence remain unresolved', async 
   assert.equal(result.column, 'unclear')
   assert.deepEqual(result.issues, ['PLACEMENT_DISAGREEMENT'])
   assert.equal(result.evidence.mirrorChecks.length, 2)
-  assert.equal(model.calls(), 8)
+  assert.equal(model.calls(), 10)
 })
 
 test('direction-neutral side placement receives the same score without claiming left or right', () => {
@@ -351,23 +408,23 @@ test('judge receives only normalized non-placement facts', () => {
 })
 
 test('a technical placement call is retried on the same evidence', async () => {
-  const model = mockSdk([
-    new Error('temporary worker failure'),
-    vote(),
-    vote(),
-    vote(),
-  ])
+  const model = mockObservationSdk({
+    'f2.png': [new Error('temporary worker failure'), outside()],
+    'f3.png': outside(),
+    'f4.png': observation(),
+    'f5.png': observation(),
+    'f6.png': observation(),
+  })
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'CLEAR')
-  assert.equal(model.calls(), 4)
+  assert.equal(model.calls(), 6)
 })
 
 test('two technical failures propagate as a system error instead of a clip diagnosis', async () => {
-  const model = mockSdk([
-    new Error('worker failed'),
-    new Error('worker still failed'),
-  ])
+  const model = mockObservationSdk({
+    'f2.png': [new Error('worker failed'), new Error('worker still failed')],
+  })
 
   await assert.rejects(
     scoring.classifyPlacement(model.sdk, 'model', frames),

@@ -31,11 +31,11 @@ const {
 // Scoring prompts — tune the rubric here. Scoring runs in three stages so the
 // model commits to what it can actually see before it judges anything:
 //
-//   Stage 1 (placement readiness, one ordered composite per call): each target
-//   half reports ball visibility, full-goal visibility, ball/goal relation,
-//   whether the before→target transition preserves arrival rather than its
-//   aftermath, ground proximity, row, and center-versus-side. Aftermath images
-//   cannot vote on entry height.
+//   Stage 1 (placement readiness, one ordinary frame per call): each frame
+//   reports only its own ball/goal relationship and current position.
+//   JavaScript compares observations two sampled moments apart to derive an
+//   outside→inside arrival or an inside→inside aftermath. QVAC never receives
+//   a multi-image or composite placement request.
 //   Ground proximity is committed before the row, so a ball visibly on the
 //   turf cannot survive as a middle-height answer. At least two usable
 //   observations and a strict majority are required. A failed first attempt
@@ -197,17 +197,13 @@ Ground rules: mention only people, objects, and events the fact list
 reports. Never invent players, a goalkeeper, defenders, or a crowd it does
 not mention, and do not fill gaps with general football knowledge.`
 
-// Placement pass prompt — sent with one ordered before/target composite. A
-// single still could not distinguish a lifted ball entering high from the same
-// ball later falling to the turf in the net; the preceding image supplies the
-// temporal evidence needed to make that distinction. Both moments are joined
-// into ONE image because repeated multi-attachment calls crash some Windows
-// QVAC/llama.cpp workers. The judge pass never picks the zone.
-const PLACEMENT_PROMPT = `You are looking at ONE side-by-side composite made from two ordered still moments in a short football (soccer) clip.
-The LEFT half is BEFORE. The RIGHT half is TARGET and comes immediately after
-BEFORE. Answer every visual field for TARGET, using BEFORE only to determine
-whether TARGET shows the incoming shot or what happened after it entered. Do
-not describe or score BEFORE separately.
+// Placement observation prompt — every request contains exactly one ordinary
+// extracted frame. Ordered reasoning happens later in JavaScript. This avoids
+// the native QVAC worker crashes reproduced with both two-image attachments
+// and a side-by-side composite while retaining auditable temporal evidence.
+const PLACEMENT_PROMPT = `You are looking at ONE still moment from a short football (soccer) clip.
+Report only what is visible in this one moment. Do not infer what happened
+before or after it, and do not reconstruct the ball's earlier path.
 
 First report the visual evidence. These fields are separate so that a missing
 ball, an incomplete goal, and a disagreement about placement never get treated
@@ -224,28 +220,10 @@ goal_visibility — whether the goal mouth can be used as a complete reference:
 - not_visible: no usable goal is visible
 - unclear: you cannot tell whether the complete goal frame is present
 
-before_ball_goal_relation — where the visible ball is in the LEFT BEFORE half:
-- in_or_entering: the ball is already inside, crossing into, or clearly
-  entering the goal
-- outside: the ball is visibly outside and not yet entering the goal
-- unclear: the ball's relationship to the goal cannot be determined
-
-ball_goal_relation — what the visible ball is doing in the RIGHT TARGET half:
+ball_goal_relation — where the visible ball currently is relative to the goal:
 - in_or_entering: the ball is inside, crossing into, or clearly entering the goal
 - outside: the ball is visibly outside and not entering the goal
 - unclear: the ball's relationship to the goal cannot be determined
-
-shot_moment — whether TARGET preserves the ball's incoming height:
-- arrival: BEFORE shows the ball outside or approaching the goal and TARGET
-  shows it reaching, crossing, or only just passing the goal line on the same
-  incoming path
-- aftermath: the ball is already inside the goal in BEFORE and remains,
-  falls, rolls, rests, or bounces inside the goal in TARGET
-- unclear: the two images do not establish which of those transitions occurred
-
-Do not call TARGET arrival merely because its ball is inside the goal. If the
-ball was already inside in BEFORE, TARGET is aftermath and its current height
-cannot reveal the entry height.
 
 ball_ground_proximity — compare the bottom of the visible ball with the turf
 or the line joining the bottoms of the two goalposts:
@@ -255,11 +233,11 @@ or the line joining the bottoms of the two goalposts:
   the bottom of the ball from that level
 - unclear: the ball or ground reference is not clear enough to compare
 
-Only when the ball is visible in TARGET, the full goal is visible, the ball is
-in or entering the goal, AND shot_moment is arrival, report its position as a
-row and a column. If shot_moment is aftermath or unclear, answer unclear for
-ball_ground_proximity, row, and column. Never use a ball lying, falling, or
-bouncing in the net to reconstruct an earlier entry height.
+Only when the ball is visible, the full goal is visible, and the ball is in or
+entering the goal, report its CURRENT position as a row and a column. If any
+of those conditions is missing, answer unclear for ball_ground_proximity, row,
+and column. JavaScript will compare this observation with an earlier one and
+discard it if it represents aftermath rather than arrival.
 
 Everything is from the CAMERA'S point of view — the picture exactly as you
 see it. Never answer from the shooter's or the goalkeeper's point of view.
@@ -432,9 +410,7 @@ const placementField = {
   properties: {
     ball_visibility: { type: 'string', enum: ['visible', 'not_visible', 'unclear'] },
     goal_visibility: { type: 'string', enum: ['full', 'partial', 'not_visible', 'unclear'] },
-    before_ball_goal_relation: { type: 'string', enum: ['in_or_entering', 'outside', 'unclear'] },
     ball_goal_relation: { type: 'string', enum: ['in_or_entering', 'outside', 'unclear'] },
-    shot_moment: { type: 'string', enum: ['arrival', 'aftermath', 'unclear'] },
     ball_ground_proximity: { type: 'string', enum: ['near_ground', 'clear_air', 'unclear'] },
     row: { type: 'string', enum: ['top', 'mid', 'bottom', 'unclear'] },
     column: { type: 'string', enum: ['side', 'center', 'unclear'] },
@@ -443,9 +419,7 @@ const placementField = {
   required: [
     'ball_visibility',
     'goal_visibility',
-    'before_ball_goal_relation',
     'ball_goal_relation',
-    'shot_moment',
     'ball_ground_proximity',
     'row',
     'column',
@@ -575,9 +549,18 @@ const PLACEMENT_FRAME_COUNT = Number(process.env.QVAC_PLACEMENT_FRAMES) || 3
 const PLACEMENT_RECOVERY_FRAME_COUNT =
   Number(process.env.QVAC_PLACEMENT_RECOVERY_FRAMES) || 5
 
-// A failed or malformed ordered-pair model response is retried once against
+// A failed or malformed single-frame model response is retried once against
 // the same evidence. This is a system recovery, not a clip-quality judgment.
 const PLACEMENT_CALL_ATTEMPTS = 2
+
+// Compare each target with the observation two sampled moments earlier. With
+// the weighted 16-frame sweep this is a short arrival window: the first two
+// observations after an outside→inside transition can agree, while a third
+// later in-goal observation becomes aftermath and cannot outvote them.
+const PLACEMENT_CONTEXT_GAP = Math.max(
+  1,
+  Number(process.env.QVAC_PLACEMENT_CONTEXT_GAP) || 2
+)
 
 // The four-category observation pass does not need every dense placement
 // sample. Keeping an evenly spaced subset reduces the size of its one large
@@ -1079,6 +1062,14 @@ async function clearCache (sdk) {
 // and overflows the window. Clear after every call (success or failure) so
 // each pass and each clip starts from a clean slate.
 async function runCompletion (sdk, modelId, { history, responseFormat }) {
+  // A placement retry can reload the native worker and replace its opaque
+  // model ID. Callers higher in the score pipeline still hold the old ID, so
+  // transparently adopt the fresh process-wide handle for later passes.
+  if (_qvac && _qvac.modelId !== modelId) {
+    sdk = _qvac.sdk
+    modelId = _qvac.modelId
+  }
+
   const run = sdk.completion({
     modelId,
     history,
@@ -1110,8 +1101,11 @@ async function runCompletion (sdk, modelId, { history, responseFormat }) {
     // session and every clip after it would fail with the same error. Drop
     // the handle so the next call reloads the model, and skip the cache clear
     // because there is no worker left to clear.
-    if (isWorkerDead(err)) {
-      console.warn('[qvac] worker died mid-request — dropping the model handle so the next call reloads it')
+    if (isWorkerDead(err) || isModelHandleMissing(err)) {
+      const reason = isWorkerDead(err)
+        ? 'worker died mid-request'
+        : 'worker rejected its stale model ID'
+      console.warn(`[qvac] ${reason} — dropping the model handle so the next call reloads it`)
       _qvac = null
       throw err
     }
@@ -1132,6 +1126,10 @@ function isWorkerDead (err) {
   return err?.code === 50205 || /WORKER_CRASHED|worker exited/i.test(String(err?.message ?? ''))
 }
 
+function isModelHandleMissing (err) {
+  return /Model with ID ["']?[^"']+["']? not found/i.test(String(err?.message ?? ''))
+}
+
 /**
  * Resolve placement from repeated, structured evidence.
  *
@@ -1147,12 +1145,17 @@ function isWorkerDead (err) {
 //   with unused frames when needed, and returns CLEAR, RECOVERED, or
 //   UNRESOLVED with an evidence report.
 async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
+  // One observation per physical/mirrored frame, reused wherever ordered
+  // windows overlap. This keeps the native worker on its proven one-image
+  // path and avoids asking Qwen contradictory questions about the same still.
+  const observationCache = new Map()
   const initialFrames = frames.slice(-PLACEMENT_FRAME_COUNT)
   const initialVotes = await collectPlacementVotes(
     sdk,
     modelId,
     initialFrames,
-    frames
+    frames,
+    observationCache
   )
   const failedMirrorFrames = new Set()
   const mirrorChecks = []
@@ -1161,7 +1164,8 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
     sdk,
     modelId,
     initialVotes,
-    failedMirrorFrames
+    failedMirrorFrames,
+    observationCache
   )
   if (initial.mirror) mirrorChecks.push(initial.mirror)
 
@@ -1184,7 +1188,8 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
     sdk,
     modelId,
     recoveryFrames,
-    frames
+    frames,
+    observationCache
   )
   const frameOrder = new Map(frames.map((frame, index) => [frame, index]))
   const combinedVotes = [...initialVotes, ...recoveryVotes]
@@ -1194,7 +1199,8 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
     sdk,
     modelId,
     combinedVotes,
-    failedMirrorFrames
+    failedMirrorFrames,
+    observationCache
   )
   if (combined.mirror) mirrorChecks.push(combined.mirror)
 
@@ -1224,26 +1230,60 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
   }
 }
 
-async function collectPlacementVotes (sdk, modelId, frames, allFrames = frames) {
-  const votes = []
-  for (const frame of frames) {
+async function collectPlacementVotes (
+  sdk,
+  modelId,
+  frames,
+  allFrames = frames,
+  observationCache = new Map()
+) {
+  const pairs = frames.map((frame) => {
     const index = allFrames.indexOf(frame)
-    // Runtime extraction always supplies many frames, but duplicate the target
-    // as a safe fallback for a synthetic one-frame caller. The prompt then has
-    // no temporal basis and should answer `unclear` rather than invent motion.
-    const contextFrame = index > 0 ? allFrames[index - 1] : frame
-    const vote = await askPlacementWithRetry(
+    const contextIndex = index > 0
+      ? Math.max(0, index - PLACEMENT_CONTEXT_GAP)
+      : index
+    return {
+      frame,
+      contextFrame: index >= 0 ? allFrames[contextIndex] : frame,
+    }
+  })
+
+  // Observe every unique still once, in clip order. Initial windows overlap
+  // heavily (for example f2→f4 and f3→f5), so caching cuts six native calls
+  // to five while ensuring the same frame cannot receive two model answers.
+  const frameOrder = new Map(allFrames.map((frame, index) => [frame, index]))
+  const needed = [...new Set(pairs.flatMap(({ frame, contextFrame }) => [
+    contextFrame,
+    frame,
+  ]))].sort((a, b) =>
+    (frameOrder.get(a) ?? Number.MAX_SAFE_INTEGER) -
+    (frameOrder.get(b) ?? Number.MAX_SAFE_INTEGER)
+  )
+  for (const frame of needed) {
+    await observePlacementFrame(sdk, modelId, frame, observationCache)
+  }
+
+  const votes = []
+  for (const { frame, contextFrame } of pairs) {
+    const before = await observePlacementFrame(
+      sdk,
+      modelId,
+      contextFrame,
+      observationCache
+    )
+    const target = await observePlacementFrame(
       sdk,
       modelId,
       frame,
-      contextFrame
+      observationCache
     )
+    const vote = combinePlacementObservations(before, target)
     votes.push({ frame, contextFrame, ...vote })
     console.log(
       `[qvac] placement evidence ${path.basename(contextFrame)} -> ${path.basename(frame)}: ` +
       `ball=${vote.ball_visibility} goal=${vote.goal_visibility} ` +
       `transition=${vote.before_ball_goal_relation}->${vote.ball_goal_relation} ` +
-      `moment=${vote.shot_moment}${vote.momentCorrected ? ` (reported=${vote.reportedShotMoment})` : ''} ` +
+      `moment=${vote.shot_moment} ` +
       `ground=${vote.ball_ground_proximity} ` +
       `row=${vote.row}${vote.heightCorrected ? ` (reported=${vote.reportedRow})` : ''} ` +
       `column=${vote.column}`
@@ -1252,17 +1292,32 @@ async function collectPlacementVotes (sdk, modelId, frames, allFrames = frames) 
   return votes
 }
 
-// Retry a technical/model-output failure once against the exact same pair.
+async function observePlacementFrame (sdk, modelId, frame, cache) {
+  if (!cache.has(frame)) {
+    const pending = askPlacementWithRetry(sdk, modelId, frame)
+    cache.set(frame, pending)
+    try {
+      return await pending
+    } catch (err) {
+      cache.delete(frame)
+      throw err
+    }
+  }
+  return cache.get(frame)
+}
+
+// Retry a technical/model-output failure once against the exact same frame.
 // If both attempts fail, the error propagates as a system failure; it is never
 // turned into a claim about clip quality.
-async function askPlacementWithRetry (sdk, modelId, frame, contextFrame = frame) {
+async function askPlacementWithRetry (sdk, modelId, frame) {
   let lastError
+  let activeSdk = sdk
+  let activeModelId = modelId
   for (let attempt = 1; attempt <= PLACEMENT_CALL_ATTEMPTS; attempt++) {
     try {
-      return normalizePlacementVote(parseScore(await askPlacement(
-        sdk,
-        modelId,
-        contextFrame,
+      return normalizePlacementObservation(parseScore(await askPlacement(
+        activeSdk,
+        activeModelId,
         frame
       )))
     } catch (err) {
@@ -1271,6 +1326,26 @@ async function askPlacementWithRetry (sdk, modelId, frame, contextFrame = frame)
         `[qvac] placement call failed for ${path.basename(frame)} ` +
         `(attempt ${attempt}/${PLACEMENT_CALL_ATTEMPTS}): ${err.message}`
       )
+
+      // A dead native worker invalidates its opaque model ID. Reload before
+      // retrying instead of sending the corpse's ID again and masking the
+      // original crash with "Model ... not found". Unit-test SDK doubles do
+      // not expose loadModel and therefore retry against their same fixture.
+      if (
+        attempt < PLACEMENT_CALL_ATTEMPTS &&
+        (isWorkerDead(err) || isModelHandleMissing(err)) &&
+        typeof activeSdk.loadModel === 'function'
+      ) {
+        try {
+          const fresh = await getModel()
+          activeSdk = fresh.sdk
+          activeModelId = fresh.modelId
+          console.warn('[qvac] reloaded the on-device model for the placement retry')
+        } catch (reloadError) {
+          lastError = reloadError
+          break
+        }
+      }
     }
   }
 
@@ -1280,6 +1355,53 @@ async function askPlacementWithRetry (sdk, modelId, frame, contextFrame = frame)
   )
   error.code = 'PLACEMENT_ANALYSIS_ERROR'
   throw error
+}
+
+// Normalize one model observation without assigning it an arrival stage. The
+// model reports only the present image; before/after is derived separately.
+function normalizePlacementObservation (observation) {
+  const safe = observation && typeof observation === 'object' ? observation : {}
+  const ballVisibility = ['visible', 'not_visible', 'unclear'].includes(safe.ball_visibility)
+    ? safe.ball_visibility
+    : 'unclear'
+  const goalVisibility = ['full', 'partial', 'not_visible', 'unclear'].includes(safe.goal_visibility)
+    ? safe.goal_visibility
+    : 'unclear'
+  const relationValues = ['in_or_entering', 'outside', 'unclear']
+  const relation = ballVisibility === 'visible' && relationValues.includes(safe.ball_goal_relation)
+    ? safe.ball_goal_relation
+    : 'unclear'
+  const hasCurrentPosition =
+    ballVisibility === 'visible' &&
+    goalVisibility === 'full' &&
+    relation === 'in_or_entering'
+
+  return {
+    ball_visibility: ballVisibility,
+    goal_visibility: goalVisibility,
+    ball_goal_relation: relation,
+    ball_ground_proximity: hasCurrentPosition &&
+      ['near_ground', 'clear_air', 'unclear'].includes(safe.ball_ground_proximity)
+      ? safe.ball_ground_proximity
+      : 'unclear',
+    row: hasCurrentPosition && ['top', 'mid', 'bottom', 'unclear'].includes(safe.row)
+      ? safe.row
+      : 'unclear',
+    column: hasCurrentPosition && ['side', 'center', 'left', 'right', 'unclear'].includes(safe.column)
+      ? safe.column
+      : 'unclear',
+    explanation: typeof safe.explanation === 'string' ? safe.explanation : '',
+  }
+}
+
+function combinePlacementObservations (before, target) {
+  return normalizePlacementVote({
+    ...target,
+    before_ball_goal_relation: before.ball_goal_relation,
+    // Kept only as a trace field. normalizePlacementVote derives the actual
+    // stage from the two independently observed spatial relationships.
+    shot_moment: 'unclear',
+  })
 }
 
 // The small VLM can identify that a ball is sitting on the turf while still
@@ -1351,7 +1473,13 @@ function normalizePlacementVote (vote) {
   }
 }
 
-async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
+async function assessWithMirror (
+  sdk,
+  modelId,
+  votes,
+  failedMirrorFrames,
+  observationCache = new Map()
+) {
   const assessment = assessPlacementEvidence(votes)
   if (!assessment.ready) return { assessment, mirror: null }
 
@@ -1360,7 +1488,8 @@ async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
     modelId,
     votes,
     assessment,
-    failedMirrorFrames
+    failedMirrorFrames,
+    observationCache
   )
   if (mirror.passed) {
     return {
@@ -1389,7 +1518,14 @@ async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
   }
 }
 
-async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedFrames) {
+async function verifyPlacementMirror (
+  sdk,
+  modelId,
+  votes,
+  assessment,
+  excludedFrames,
+  observationCache = new Map()
+) {
   if (assessment.column === 'center') {
     return {
       required: false,
@@ -1408,12 +1544,21 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
     return { required: true, passed: false, frame: null, reason: 'no_unused_decider' }
   }
 
-  const mirrored = await askPlacementWithRetry(
+  const mirroredContext = await flipFrame(decider.contextFrame || decider.frame)
+  const mirroredFrame = await flipFrame(decider.frame)
+  const before = await observePlacementFrame(
     sdk,
     modelId,
-    await flipFrame(decider.frame),
-    await flipFrame(decider.contextFrame || decider.frame)
+    mirroredContext,
+    observationCache
   )
+  const target = await observePlacementFrame(
+    sdk,
+    modelId,
+    mirroredFrame,
+    observationCache
+  )
+  const mirrored = combinePlacementObservations(before, target)
   // Center-versus-side is invariant under a horizontal flip. Exact direction
   // is intentionally never requested or displayed because a correctly
   // flipping left/right word still proved semantically reversed on real clips.
@@ -1431,7 +1576,7 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
   console.log(
     `[qvac] placement mirror check: ` +
     `transition=${mirrored.before_ball_goal_relation}->${mirrored.ball_goal_relation} ` +
-    `moment=${mirrored.shot_moment}${mirrored.momentCorrected ? ` (reported=${mirrored.reportedShotMoment})` : ''} ` +
+    `moment=${mirrored.shot_moment} ` +
     `ground=${mirrored.ball_ground_proximity} ` +
     `row=${mirrored.row}${mirrored.heightCorrected ? ` (reported=${mirrored.reportedRow})` : ''} ` +
     `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})`
@@ -1506,42 +1651,19 @@ function publicAssessment (assessment) {
   }
 }
 
-// One ordered-pair placement question, grammar-locked to the row/column enums.
-// The pair is encoded as one image attachment to avoid a reproducible native
-// worker crash in QVAC's repeated two-attachment request path on Windows.
-async function askPlacement (sdk, modelId, contextFramePath, targetFramePath) {
-  const compositePath = await composePlacementPair(
-    contextFramePath,
-    targetFramePath
-  )
+// One single-frame observation, grammar-locked to the spatial evidence enums.
+function askPlacement (sdk, modelId, framePath) {
   return runCompletion(sdk, modelId, {
     history: [{
       role: 'user',
       content: PLACEMENT_PROMPT,
-      attachments: [{ path: compositePath }],
+      attachments: [{ path: framePath }],
     }],
     responseFormat: {
       type: 'json_schema',
       json_schema: { name: 'placement_zone', schema: placementField },
     },
   })
-}
-
-// Join two equal-size extracted moments without changing either one's pixels:
-// BEFORE occupies the left half and TARGET the right half. The output is kept
-// beside the target and reused by technical retries.
-async function composePlacementPair (contextFramePath, targetFramePath) {
-  const out = targetFramePath.replace(/\.png$/i, '.pair.png')
-  if (!fs.existsSync(out)) {
-    await execFileAsync(ffmpegPath, [
-      '-hide_banner', '-loglevel', 'error', '-y',
-      '-i', contextFramePath,
-      '-i', targetFramePath,
-      '-filter_complex', '[0:v][1:v]hstack=inputs=2[pair]',
-      '-map', '[pair]', '-frames:v', '1', out,
-    ])
-  }
-  return out
 }
 
 // Horizontally mirrored copy of a frame for the transformation-consistency

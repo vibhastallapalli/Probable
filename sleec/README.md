@@ -38,19 +38,18 @@ exact left/right claim.
 ## Arrival versus aftermath
 
 The ball's position after a goal is not necessarily its entry position: a
-lifted finish can fall, bounce, or settle near the turf. Each observation now
-sees an ordered before→target image pair. Qwen reports the ball/goal relation
-for both images, then JavaScript derives `arrival`, `aftermath`, or `unclear`
-from that transition. If the ball was already inside in the before image, the
-target is aftermath and cannot vote on row or center-versus-side—even if
-Qwen's separate moment label says `arrival`. An
+lifted finish can fall, bounce, or settle near the turf. Qwen now sees one
+ordinary frame per request and reports only that frame's ball/goal relation.
+JavaScript compares independently reported observations two sampled moments
+apart and derives `arrival`, `aftermath`, or `unclear` from the transition. If
+the ball was already inside in the earlier observation, the target is aftermath
+and cannot vote on row or center-versus-side. An
 initial set containing aftermath evidence triggers the same one bounded
 recovery attempt on earlier unused moments; if two supported arrival
-observations still cannot be found, placement stays unresolved. At runtime the
-two ordered moments are joined as the left and right halves of one composite
-image before QVAC sees them. This preserves the same transition evidence while
-avoiding a native worker failure observed with repeated two-image requests on
-Windows.
+observations still cannot be found, placement stays unresolved. Keeping every
+QVAC placement request to one original-size frame avoids the native worker
+failures reproduced with both repeated two-image requests and side-by-side
+composites on Windows.
 
 ## Ground-reference consistency
 

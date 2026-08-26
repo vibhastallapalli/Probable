@@ -32,22 +32,22 @@ const {
 // model commits to what it can actually see before it judges anything:
 //
 //   Stage 1 (placement readiness, one image per call): each tail image reports
-//   ball visibility, full-goal visibility, ball/goal relation, ground
-//   proximity, row, and column. Ground proximity is committed before the row,
-//   so a ball visibly on the turf cannot survive as a middle-height answer.
-//   At least two usable observations and a strict majority are required. A
-//   failed first attempt gets one targeted retry with unused nearby moments.
-//   A left/right verdict is checked on a mirrored image. If
-//   the model preserves every visual invariant and still sees an off-centre
-//   finish but cannot flip left/right reliably, only the direction is
-//   discarded and the result becomes a direction-neutral side zone. A loss
-//   of the ball, goal, row, or side-vs-centre distinction stays unresolved.
-//   Stage 2 (describe, frames attached): report only what is literally visible
-//   in the sampled frames — including how far the shooter stands from the
-//   goal, how fast the shot travels, and the kicking foot at contact. No
-//   opinions, no scores, no football knowledge.
-//   Stage 3 (judge, text only): score skill/difficulty/aesthetic from the
-//   stage-2 description. Placement is deliberately excluded because it has
+//   ball visibility, full-goal visibility, ball/goal relation, whether the
+//   image preserves the arrival rather than its aftermath, ground proximity,
+//   row, and center-versus-side. Aftermath images cannot vote on entry height.
+//   Ground proximity is committed before the row, so a ball visibly on the
+//   turf cannot survive as a middle-height answer. At least two usable
+//   observations and a strict majority are required. A failed first attempt
+//   gets one targeted retry with unused nearby moments. An off-centre result
+//   is checked on a mirrored image and must remain off-centre; exact left/right
+//   is never claimed because both sides score identically and the model's
+//   chirality label proved unreliable on the real clips.
+//   Stage 2 (observe, frames attached): report only a closed set of visible
+//   facts, including shooter distance, shot speed, contact, pressure, and ball
+//   motion. Unsupported details become `unclear`; free-form storytelling is
+//   forbidden.
+//   Stage 3 (judge, text only): score skill/difficulty/aesthetic from those
+//   stage-2 facts. Placement is deliberately excluded because it has
 //   its own separately weighted score; a bad row label must never contaminate
 //   the other three explanations or count more than once.
 //
@@ -115,34 +115,36 @@ Hard rules — follow these exactly:
   evidence that exists.`
 
 const DESCRIBE_PROMPT = `You are looking at ordered still frames sampled from a short football (soccer)
-clip, first frame to last. Later frames are sampled more densely because the
-shot and ball flight usually happen late in the clip.
+clip, first frame to last. Convert only visible evidence into the closed
+categories in the required JSON response.
 
-Describe only what is literally visible across the frames, in order:
-- how many people are in frame and where they are
-- the player with the ball: position, movement, and which body part touches
-  the ball in each touch you can actually see
-- the ball: where it is and how it moves from frame to frame
-- how far from the goal the shooter appears to be at the moment the shot is
-  struck, judged by how much ground is visible between the player and the
-  goal — close range, medium range, or long range
-- how fast the shot appears to travel, judged by how much distance the ball
-  covers between consecutive frames — a slow roller, medium pace, or struck
-  hard
-- the kicking foot and leg at the moment of contact, if visible, and the
-  kind of contact you can actually see — side foot, laces, toe poke, volley,
-  header, or whatever it actually is. If the foot or the contact moment is
-  not clearly visible, say so plainly instead of guessing
-- the goal, if one is visible, and whether the ball ends up in it
-- the pitch, surroundings, and camera view, briefly
+Rules for the categories:
+- shooter_distance: close, medium, long, or unclear from visible ground
+  between the shooter and goal at contact
+- shot_speed: slow, medium, fast, or unclear from distance covered between
+  consecutive moments; do not call ordinary movement fast merely because the
+  ball moved
+- kicking_foot: left or right only when the contact foot is unambiguous;
+  otherwise unclear
+- contact_type: side_foot, laces, toe_poke, volley, header, other, or unclear;
+  ordinary leg motion is not proof of a contact type
+- dribbling: none, simple, skill_move, or unclear
+- pressure: none, defender, goalkeeper, both, or unclear; people outside the
+  play do not count as pressure
+- body_position: balanced, awkward, acrobatic, or unclear
+- ball_motion: rolling, low_driven, lofted, curved, straight, or unclear
+- goal_outcome: scored, not_scored, or unclear from the sequence
 
-Write 8 to 14 short factual sentences. No opinions, no scores, no praise.
+Do not report clothing, footwear, identity, scenery, praise, or free-form
+storytelling. In particular, never invent that a player is barefoot or that
+both feet contacted the ball. Choose unclear whenever the required visual
+fact is not actually visible.
 ${GROUNDING_RULES}`
 
 const JUDGE_PROMPT_PREFIX = `You are judging a short football (soccer) highlight clip for a friendly wager.
-You cannot see the clip. Your only evidence is the following literal
-description of the sampled frames, written by an observer who reported only
-what was visible:
+You cannot see the clip. Your only evidence is the following normalized list
+of closed-category visual facts. "Unclear" means the fact was not established
+and must not be guessed:
 
 `
 
@@ -161,12 +163,13 @@ Score each from 0 to 10:
 - aesthetic: the visual beauty and spectacle of the play — how impressive or
   memorable it looks as a piece of football.
 
-Base every judgment ONLY on what the description says, not on general
+Base every judgment ONLY on what the fact list says, not on general
 football knowledge and not on what usually happens in highlight clips.
 Placement is scored separately. Do not use or mention the ball's finishing
 height, side, corner, or whether it entered the goal when scoring these three
-criteria. If the description does not mention defenders or a goalkeeper,
-treat them as absent and judge difficulty accordingly. Where the description
+criteria. If pressure is "none", treat defenders and a goalkeeper as absent
+and judge difficulty accordingly; if it is "unclear", do not assume either
+presence or absence. Where the fact list
 reports how far out the shooter was, how fast the shot traveled, or what kind
 of foot contact was made, use those reports directly: distance and shot speed
 belong only in the difficulty judgment; foot contact and strike type belong
@@ -177,7 +180,7 @@ Use the full scale conservatively instead of treating 7 as the default:
 - 3 to 4: basic and ordinary, with little difficulty, technique, or flair
 - 5 to 6: solid and clearly competent, but common rather than exceptional
 - 7 to 8: distinctly difficult, polished, or memorable, supported by explicit evidence
-- 9 to 10: genuinely exceptional or rare; award this only when the description
+- 9 to 10: genuinely exceptional or rare; award this only when the fact list
   reports extraordinary evidence for that exact criterion
 
 Missing evidence earns no extra credit. A straightforward kick from an open
@@ -202,7 +205,7 @@ same thing:
 - aesthetic: talk specifically about the overall spectacle and flair — what
   makes the play striking or plain to watch.
 
-Ground rules: mention only people, objects, and events the description
+Ground rules: mention only people, objects, and events the fact list
 reports. Never invent players, a goalkeeper, defenders, or a crowd it does
 not mention, and do not fill gaps with general football knowledge.`
 
@@ -234,6 +237,13 @@ ball_goal_relation — what the visible ball is doing relative to the goal:
 - outside: the ball is visibly outside and not entering the goal
 - unclear: the ball's relationship to the goal cannot be determined
 
+shot_moment — whether this still preserves the ball's incoming height:
+- arrival: the ball is approaching, crossing, or only just past the goal line
+  on its incoming path, so its current height represents where the shot enters
+- aftermath: the ball is already resting, rolling, falling, or bouncing in the
+  net after entry; its current height does NOT reveal where it entered
+- unclear: one still is not enough to distinguish arrival from aftermath
+
 ball_ground_proximity — compare the bottom of the visible ball with the turf
 or the line joining the bottoms of the two goalposts:
 - near_ground: the ball touches that level or has no more than one ball-width
@@ -242,9 +252,11 @@ or the line joining the bottoms of the two goalposts:
   the bottom of the ball from that level
 - unclear: the ball or ground reference is not clear enough to compare
 
-Only when the ball is visible, the full goal is visible, and the ball is in or
-entering the goal, report its position as a row and a column. Otherwise answer
-unclear for both row and column.
+Only when the ball is visible, the full goal is visible, the ball is in or
+entering the goal, AND shot_moment is arrival, report its position as a row
+and a column. If shot_moment is aftermath or unclear, answer unclear for
+ball_ground_proximity, row, and column. Never use a ball lying or bouncing in
+the net to reconstruct an earlier entry height from one still.
 
 Everything is from the CAMERA'S point of view — the picture exactly as you
 see it. Never answer from the shooter's or the goalkeeper's point of view.
@@ -260,15 +272,14 @@ bottom—never mid or top. A ball that has bounced slightly but remains within
 one ball-width of the goal's ground level is still bottom. Use mid only when
 there is clearly more than one ball-width of empty space below the ball.
 
-column — the ball's side of the goal:
-- left: near the goalpost closer to the LEFT edge of the picture
-- center: near the middle of the goal, away from both posts
-- right: near the goalpost closer to the RIGHT edge of the picture
+column — use no left/right direction; report only the horizontal region:
+- side: in either outer third of the goal, near either goalpost
+- center: in the middle third of the goal, away from both posts
 - unclear: the evidence conditions above were not all satisfied
 
 Then, in one or two sentences, say where the shot ended up the way you
-would casually tell a friend — for example "curled into the top left
-corner" or "rolled in low through the middle". Plain everyday football
+would casually tell a friend — for example "curled in high near a post"
+or "rolled in low through the middle". Plain everyday football
 words only: never use the words frame, image, grid, row, column, or cell,
 and never describe how you worked the answer out.
 ${GROUNDING_RULES}`
@@ -333,11 +344,11 @@ image, picture, grid, row, column, or cell, and never describe how you
 worked the answer out.
 ${GROUNDING_RULES}`
 
-// The 9 exact cells of the goal-mouth grid (3 rows x 3 columns, split by the
-// crossbar and goalposts) and three internal direction-neutral side zones.
-// The latter are used only when a mirror test preserves row and off-centre
-// placement but cannot verify exact left/right chirality. Left and right have
-// identical point values, so discarding direction never changes the score.
+// The legacy nine exact goal zones and the three direction-neutral side zones.
+// Real inference now resolves only center versus side, so its results use the
+// `_center` and `_side` keys. Exact left/right keys remain for stored results,
+// mock scoring, and score-table compatibility; symmetric sides have identical
+// points.
 //
 // HEIGHT DOMINATES SIDE. Getting the ball up under the crossbar takes a
 // struck, lifted shot; a bottom corner can be reached by rolling it past a
@@ -419,20 +430,50 @@ const placementField = {
     ball_visibility: { type: 'string', enum: ['visible', 'not_visible', 'unclear'] },
     goal_visibility: { type: 'string', enum: ['full', 'partial', 'not_visible', 'unclear'] },
     ball_goal_relation: { type: 'string', enum: ['in_or_entering', 'outside', 'unclear'] },
+    shot_moment: { type: 'string', enum: ['arrival', 'aftermath', 'unclear'] },
     ball_ground_proximity: { type: 'string', enum: ['near_ground', 'clear_air', 'unclear'] },
     row: { type: 'string', enum: ['top', 'mid', 'bottom', 'unclear'] },
-    column: { type: 'string', enum: ['left', 'center', 'right', 'unclear'] },
+    column: { type: 'string', enum: ['side', 'center', 'unclear'] },
     explanation: { type: 'string' },
   },
   required: [
     'ball_visibility',
     'goal_visibility',
     'ball_goal_relation',
+    'shot_moment',
     'ball_ground_proximity',
     'row',
     'column',
     'explanation',
   ],
+  additionalProperties: false,
+}
+
+// The observation pass is grammar-constrained to closed categories. This
+// replaces the former free-form description that could invent clothing,
+// footwear, or contact details and then feed those inventions into all three
+// judged criteria.
+const CLIP_FACT_ENUMS = Object.freeze({
+  shooter_distance: ['close', 'medium', 'long', 'unclear'],
+  shot_speed: ['slow', 'medium', 'fast', 'unclear'],
+  kicking_foot: ['left', 'right', 'unclear'],
+  contact_type: ['side_foot', 'laces', 'toe_poke', 'volley', 'header', 'other', 'unclear'],
+  dribbling: ['none', 'simple', 'skill_move', 'unclear'],
+  pressure: ['none', 'defender', 'goalkeeper', 'both', 'unclear'],
+  body_position: ['balanced', 'awkward', 'acrobatic', 'unclear'],
+  ball_motion: ['rolling', 'low_driven', 'lofted', 'curved', 'straight', 'unclear'],
+  goal_outcome: ['scored', 'not_scored', 'unclear'],
+})
+
+const CLIP_FACTS_SCHEMA = {
+  type: 'object',
+  properties: Object.fromEntries(
+    Object.entries(CLIP_FACT_ENUMS).map(([field, values]) => [
+      field,
+      { type: 'string', enum: values },
+    ])
+  ),
+  required: Object.keys(CLIP_FACT_ENUMS),
   additionalProperties: false,
 }
 
@@ -511,7 +552,15 @@ const SCORE_FIELDS = [...JUDGED_FIELDS, 'placement']
 // local model's context window. Sampling is weighted toward the second half of
 // the clip (see sampleTimestamps), where the shot and ball flight happen.
 const FPS_CEILING = 30
-const DEFAULT_MAX_FRAMES = Number(process.env.QVAC_MAX_FRAMES) || 16
+// Eight samples were too sparse to retain the actual goal-line crossing: the
+// last three could all show the ball after it had fallen in the net. Twelve
+// remains within the Qwen3-VL context budget at the frame-size cap while
+// providing several observations around a 3-second shot's arrival.
+const MIN_ANALYSIS_FRAMES = 12
+const DEFAULT_MAX_FRAMES = Math.max(
+  Number(process.env.QVAC_MAX_FRAMES) || 16,
+  MIN_ANALYSIS_FRAMES
+)
 
 // How many of the last sampled frames the placement pass polls, one frame per
 // call. Sampling is weighted toward the end of the clip, so these frames hold
@@ -523,7 +572,7 @@ const PLACEMENT_FRAME_COUNT = Number(process.env.QVAC_PLACEMENT_FRAMES) || 3
 // One bounded visual recovery attempt polls additional frames that were
 // already extracted but were not part of the initial placement vote.
 const PLACEMENT_RECOVERY_FRAME_COUNT =
-  Number(process.env.QVAC_PLACEMENT_RECOVERY_FRAMES) || 3
+  Number(process.env.QVAC_PLACEMENT_RECOVERY_FRAMES) || 5
 
 // A failed or malformed single-frame model response is retried once against
 // the same evidence. This is a system recovery, not a clip-quality judgment.
@@ -747,10 +796,11 @@ function sampleTimestamps (duration, count) {
 
 // Primary judge model: Qwen3-VL 2B from the QVAC registry. Chosen
 // empirically on real goal frames: SmolVLM2 2.2B could not locate the ball
-// at all — its answers flipped between identical calls and failed every
-// mirrored-image check — while Qwen3-VL 2B at temperature 0 answered every
-// ground-truth probe correctly, deterministically, and flipped sides
-// correctly on mirrored frames. SmolVLM2 2.2B stays as a fallback (weights
+// consistently, while Qwen3-VL 2B at temperature 0 produced the most stable
+// structured evidence. Real-clip testing also exposed its limits: exact
+// chirality and post-goal position are not trusted, which is why runtime uses
+// center-versus-side and arrival-only placement votes. SmolVLM2 2.2B stays as
+// a fallback (weights
 // via the SDK's HTTP model source from the official ggml-org conversion,
 // pinned to a fixed revision), then the 500M registry build as last resort.
 // Network policy unchanged: one-time download into QVAC's on-disk cache,
@@ -781,8 +831,8 @@ async function getModel (onProgress) {
 
   const sdk = await import('@qvac/sdk')
 
-  // Load order: Qwen3-VL 2B first (the only candidate that proved it can
-  // actually locate the ball — see the comment above MODEL_INFO), SmolVLM2
+  // Load order: Qwen3-VL 2B first (the most stable candidate in the real-clip
+  // checks — see the comment above MODEL_INFO), SmolVLM2
   // 2.2B next, 500M registry build last, so a failed download degrades
   // scoring instead of breaking it. QVAC_FORCE_500M=1 skips straight to the
   // small registry build (useful on low-RAM machines).
@@ -878,9 +928,9 @@ async function prepareModel (onProgress) {
  *
  * Three stages: the model first checks whether placement has enough visual
  * evidence, including one bounded recovery attempt when needed. Only a clip
- * with resolved placement proceeds to the description and judge passes.
- * Judging from its own literal account keeps the score anchored to what is
- * actually in the clip instead of what usually happens in football highlights,
+ * with resolved placement proceeds to the fact-observation and judge passes.
+ * Judging from a closed, normalized fact list keeps unsupported prose out of
+ * the score instead of letting it become assumed football context,
  * and answering the zone question visually keeps placement anchored to where
  * the ball actually crossed the line.
  *
@@ -946,28 +996,32 @@ async function scoreClip (frames, metadata = {}) {
     ? `\nClip duration: ${metadata.duration.toFixed(1)}s across ${frames.length} sampled frames.`
     : `\n${frames.length} sampled frames.`
 
-  // Stage 2 — describe. Frames attached, free text out. This expensive pass
-  // is skipped entirely when placement evidence is unresolved.
-  const description = (await runCompletion(sdk, modelId, {
+  // Stage 2 — observe. Frames attached, closed-category JSON out. This
+  // expensive pass is skipped entirely when placement evidence is unresolved.
+  // Normalization is deliberately allow-list based, so extra invented fields
+  // can never become evidence for the judge.
+  const observedFacts = normalizeClipFacts(parseScore(await runCompletion(sdk, modelId, {
     history: [{
       role: 'user',
       content: DESCRIBE_PROMPT + durationLine,
       attachments: frames.map((p) => ({ path: p })),
     }],
-  })).trim()
-  if (!description) {
-    throw new Error('Model returned an empty frame description')
-  }
-  console.log(`[qvac] clip description:\n${description}`)
+    responseFormat: {
+      type: 'json_schema',
+      json_schema: { name: 'clip_facts', schema: CLIP_FACTS_SCHEMA },
+    },
+  })))
+  const factText = clipFactsForJudge(observedFacts)
+  console.log(`[qvac] clip facts: ${JSON.stringify(observedFacts)}`)
 
-  // Stage 3 — judge skill/difficulty/aesthetic from the description (no
+  // Stage 3 — judge skill/difficulty/aesthetic from the fact list (no
   // frames), grammar-constrained to the score schema. Placement is omitted:
   // it has its own weighted score, and a row error must not leak into every
   // other criterion.
   const judged = await runCompletion(sdk, modelId, {
     history: [{
       role: 'user',
-      content: JUDGE_PROMPT_PREFIX + description + JUDGE_RUBRIC,
+      content: JUDGE_PROMPT_PREFIX + factText + JUDGE_RUBRIC,
     }],
     responseFormat: {
       type: 'json_schema',
@@ -1028,9 +1082,9 @@ async function runCompletion (sdk, modelId, { history, responseFormat }) {
     // (e.g. a night shot) cannot send the greedy describe pass into an endless
     // repetition loop that fills the whole context window and dies with a
     // CONTEXT_OVERFLOW. repeat_penalty discourages that loop from starting.
-    // An honest description is 8-14 sentences (~350 tokens); 768 leaves room
-    // for the judge's three explanations while still capping a runaway well
-    // short of the 16k ceiling.
+    // The closed fact object is short; 768 primarily leaves room for the
+    // judge's three explanations while still capping a runaway well short of
+    // the 16k ceiling.
     generationParams: { temp: 0, predict: 768, repeat_penalty: 1.15 },
     ...(responseFormat ? { responseFormat } : {}),
   })
@@ -1071,14 +1125,13 @@ function isWorkerDead (err) {
 /**
  * Resolve placement from repeated, structured evidence.
  *
- * The initial three tail frames must provide at least two usable observations
- * and a strict row/column majority. A failed initial attempt gets one bounded
- * visual recovery using additional frames chosen for the observed failure.
- * A left/right result is also checked under a mirror transformation. Exact
- * chirality must flip. If all invariant facts survive and both observations
- * remain off-centre, the system may retain only the direction-neutral side
- * class because left and right carry identical points. Nothing here converts
- * missing or contradictory visual evidence into a real goal zone.
+ * The initial three tail frames must provide at least two arrival observations
+ * and a strict row/column majority. Aftermath frames cannot vote on entry
+ * position. A failed initial attempt gets one bounded visual recovery using
+ * earlier unused frames chosen for the observed failure. An off-centre result
+ * is also checked under a mirror transformation and must remain off-centre;
+ * exact chirality is never requested. Nothing here converts missing or
+ * contradictory visual evidence into a real goal zone.
  */
 // WHAT THIS DOES: Collects several independent observations, retries once
 //   with unused frames when needed, and returns CLEAR, RECOVERED, or
@@ -1159,7 +1212,8 @@ async function collectPlacementVotes (sdk, modelId, frames) {
     console.log(
       `[qvac] placement evidence ${path.basename(frame)}: ` +
       `ball=${vote.ball_visibility} goal=${vote.goal_visibility} ` +
-      `relation=${vote.ball_goal_relation} ground=${vote.ball_ground_proximity} ` +
+      `relation=${vote.ball_goal_relation} moment=${vote.shot_moment} ` +
+      `ground=${vote.ball_ground_proximity} ` +
       `row=${vote.row}${vote.heightCorrected ? ` (reported=${vote.reportedRow})` : ''} ` +
       `column=${vote.column}`
     )
@@ -1199,27 +1253,45 @@ async function askPlacementWithRetry (sdk, modelId, frame) {
 // ball/goal/shot-moment failure.
 function normalizePlacementVote (vote) {
   const safe = vote && typeof vote === 'object' ? vote : {}
+  const shotMoment = ['arrival', 'aftermath', 'unclear'].includes(safe.shot_moment)
+    ? safe.shot_moment
+    : 'unclear'
   const reportedRow = ['top', 'mid', 'bottom', 'unclear'].includes(safe.row)
     ? safe.row
     : 'unclear'
+  const reportedColumn = ['side', 'center', 'unclear'].includes(safe.column)
+    ? safe.column
+    // Backward-compatible normalization for controlled tests and legacy
+    // saved evidence. Runtime grammar no longer emits exact directions.
+    : (safe.column === 'left' || safe.column === 'right')
+        ? 'side'
+        : 'unclear'
   const ground = ['near_ground', 'clear_air', 'unclear'].includes(safe.ball_ground_proximity)
     ? safe.ball_ground_proximity
     : 'unclear'
   const hasUsableSceneEvidence =
     safe.ball_visibility === 'visible' &&
     safe.goal_visibility === 'full' &&
-    safe.ball_goal_relation === 'in_or_entering'
+    safe.ball_goal_relation === 'in_or_entering' &&
+    shotMoment === 'arrival'
   const heightCorrected =
     hasUsableSceneEvidence &&
     ground === 'near_ground' &&
     (reportedRow === 'mid' || reportedRow === 'top')
+  const aftermathDiscarded = shotMoment === 'aftermath'
 
   return {
     ...safe,
-    ball_ground_proximity: ground,
+    shot_moment: shotMoment,
+    ball_ground_proximity: hasUsableSceneEvidence ? ground : 'unclear',
     reportedRow,
-    row: heightCorrected ? 'bottom' : reportedRow,
+    reportedColumn,
+    row: hasUsableSceneEvidence
+      ? (heightCorrected ? 'bottom' : reportedRow)
+      : 'unclear',
+    column: hasUsableSceneEvidence ? reportedColumn : 'unclear',
     heightCorrected,
+    aftermathDiscarded,
   }
 }
 
@@ -1235,23 +1307,11 @@ async function assessWithMirror (sdk, modelId, votes, failedMirrorFrames) {
     failedMirrorFrames
   )
   if (mirror.passed) {
-    if (mirror.directionNeutral) {
-      return {
-        assessment: {
-          ...assessment,
-          column: 'side',
-          directionNeutral: true,
-          directionVerified: false,
-          mirrorMismatch: true,
-        },
-        mirror,
-      }
-    }
     return {
       assessment: {
         ...assessment,
-        directionNeutral: false,
-        directionVerified: true,
+        directionNeutral: assessment.column === 'side',
+        directionVerified: assessment.column === 'center',
       },
       mirror,
     }
@@ -1297,23 +1357,25 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
     modelId,
     await flipFrame(decider.frame)
   )
-  const expectedColumn = assessment.column === 'left' ? 'right' : 'left'
+  // Center-versus-side is invariant under a horizontal flip. Exact direction
+  // is intentionally never requested or displayed because a correctly
+  // flipping left/right word still proved semantically reversed on real clips.
+  const expectedColumn = assessment.column
   const invariantsPassed =
     mirrored.ball_visibility === 'visible' &&
     mirrored.goal_visibility === 'full' &&
     mirrored.ball_goal_relation === 'in_or_entering' &&
-    mirrored.row === assessment.row
-  const exactDirectionPassed = invariantsPassed && mirrored.column === expectedColumn
-  const sideClassPreserved = invariantsPassed &&
-    (mirrored.column === 'left' || mirrored.column === 'right')
-  const directionNeutral = !exactDirectionPassed && sideClassPreserved
-  const passed = exactDirectionPassed || directionNeutral
+    mirrored.shot_moment === 'arrival' &&
+    mirrored.row === assessment.row &&
+    mirrored.column === expectedColumn &&
+    mirrored.ball_ground_proximity === decider.ball_ground_proximity
+  const passed = invariantsPassed
 
   console.log(
-    `[qvac] placement mirror check: ground=${mirrored.ball_ground_proximity} ` +
+    `[qvac] placement mirror check: moment=${mirrored.shot_moment} ` +
+    `ground=${mirrored.ball_ground_proximity} ` +
     `row=${mirrored.row}${mirrored.heightCorrected ? ` (reported=${mirrored.reportedRow})` : ''} ` +
-    `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})` +
-    (directionNeutral ? ' — exact side unverified; retaining direction-neutral side' : '')
+    `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})`
   )
 
   return {
@@ -1326,13 +1388,11 @@ async function verifyPlacementMirror (sdk, modelId, votes, assessment, excludedF
     observedGroundProximity: mirrored.ball_ground_proximity,
     heightCorrected: mirrored.heightCorrected,
     invariantsPassed,
-    directionVerified: exactDirectionPassed,
-    directionNeutral,
-    reason: exactDirectionPassed
-      ? 'exact_direction_verified'
-      : directionNeutral
-        ? 'side_class_preserved_direction_unverified'
-        : 'mirror_invariant_failed',
+    directionVerified: false,
+    directionNeutral: true,
+    reason: passed
+      ? 'side_class_mirror_consistent'
+      : 'mirror_invariant_failed',
   }
 }
 
@@ -1342,10 +1402,9 @@ function resolvedPlacement (status, votes, assessment, evidence) {
     vote.ball_visibility === 'visible' &&
     vote.goal_visibility === 'full' &&
     vote.ball_goal_relation === 'in_or_entering' &&
+    vote.shot_moment === 'arrival' &&
     vote.row === assessment.row &&
-    (directionNeutral
-      ? vote.column === 'left' || vote.column === 'right'
-      : vote.column === assessment.column)
+    vote.column === assessment.column
   )
   return {
     status,
@@ -1375,6 +1434,7 @@ function publicAssessment (assessment) {
       ballVisible: 0,
       goalFull: 0,
       ballAtGoal: 0,
+      aftermath: 0,
       usable: 0,
       rowAgreement: 0,
       columnAgreement: 0,
@@ -1402,8 +1462,9 @@ function askPlacement (sdk, modelId, framePath) {
   })
 }
 
-// Horizontally mirrored copy of a frame for the chirality check, written next
-// to the source frame so it lives and dies with the extraction directory.
+// Horizontally mirrored copy of a frame for the transformation-consistency
+// check, written next to the source frame so it lives and dies with the
+// extraction directory.
 async function flipFrame (framePath) {
   const out = framePath.replace(/\.png$/i, '.mirror.png')
   if (!fs.existsSync(out)) {
@@ -1892,6 +1953,44 @@ function clampScore (n) {
   return Math.max(0, Math.min(10, v))
 }
 
+// Keep only the exact fact fields and values allowed by CLIP_FACTS_SCHEMA.
+// This stays defensive even though llama.cpp receives the schema: older or
+// fallback runtimes may still return malformed values or extra properties.
+function normalizeClipFacts (raw) {
+  const source = raw && typeof raw === 'object' ? raw : {}
+  return Object.fromEntries(
+    Object.entries(CLIP_FACT_ENUMS).map(([field, allowed]) => [
+      field,
+      allowed.includes(source[field]) ? source[field] : 'unclear',
+    ])
+  )
+}
+
+function humanizeFact (value) {
+  return String(value).replaceAll('_', ' ')
+}
+
+// The judge receives only these normalized facts. Goal outcome is kept in the
+// diagnostic log but intentionally omitted here: placement has its own visual
+// gate and score, so an independent outcome guess must not contaminate skill,
+// difficulty, or aesthetic.
+function clipFactsForJudge (facts) {
+  const safe = normalizeClipFacts(facts)
+  const labels = {
+    shooter_distance: 'Shooter distance',
+    shot_speed: 'Shot speed',
+    kicking_foot: 'Kicking foot',
+    contact_type: 'Contact type',
+    dribbling: 'Dribbling',
+    pressure: 'Pressure',
+    body_position: 'Body position',
+    ball_motion: 'Ball motion',
+  }
+  return Object.entries(labels)
+    .map(([field, label]) => `${label}: ${humanizeFact(safe[field])}`)
+    .join('\n')
+}
+
 // The JSON schema constrains the model to valid JSON, but stay defensive in
 // case a model emits leading/trailing prose despite the grammar.
 function parseScore (content) {
@@ -2051,5 +2150,7 @@ module.exports = {
   canCompareHeadToHead,
   hasResolvedPlacement,
   selectComparisonFrames,
+  normalizeClipFacts,
+  clipFactsForJudge,
   finalizeScore,
 }

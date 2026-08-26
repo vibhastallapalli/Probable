@@ -15,8 +15,9 @@ function vote (overrides = {}) {
     ball_visibility: 'visible',
     goal_visibility: 'full',
     ball_goal_relation: 'in_or_entering',
+    shot_moment: 'arrival',
     row: 'top',
-    column: 'left',
+    column: 'side',
     explanation: 'The ball went into the top left corner.',
     ...overrides,
   }
@@ -26,12 +27,12 @@ test('two agreeing usable frames can settle a three-frame attempt', () => {
   const result = assessPlacementEvidence([
     vote(),
     vote(),
-    vote({ row: 'mid', column: 'right' }),
+    vote({ row: 'mid', column: 'center' }),
   ])
 
   assert.equal(result.ready, true)
   assert.equal(result.row, 'top')
-  assert.equal(result.column, 'left')
+  assert.equal(result.column, 'side')
   assert.equal(result.counts.usable, 3)
   assert.equal(result.requiredAgreement, 2)
 })
@@ -106,10 +107,24 @@ test('one at-goal observation cannot clear the shot-moment gate', () => {
   assert.deepEqual(result.issues, [PLACEMENT_ISSUES.SHOT_MOMENT_NOT_CAPTURED])
 })
 
+test('a ball that has fallen or bounced in the net is aftermath, not placement evidence', () => {
+  const result = assessPlacementEvidence([
+    vote({ shot_moment: 'aftermath', row: 'bottom', column: 'side' }),
+    vote({ shot_moment: 'aftermath', row: 'bottom', column: 'side' }),
+    vote({ shot_moment: 'arrival', row: 'top', column: 'center' }),
+  ])
+
+  assert.equal(result.ready, false)
+  assert.equal(result.counts.aftermath, 2)
+  assert.equal(result.counts.ballAtGoal, 1)
+  assert.deepEqual(result.issues, [PLACEMENT_ISSUES.SHOT_MOMENT_NOT_CAPTURED])
+})
+
 test('usable frames without a strict majority remain a placement disagreement', () => {
   const result = assessPlacementEvidence([
-    vote({ row: 'top', column: 'left' }),
-    vote({ row: 'top', column: 'right' }),
+    vote({ row: 'top', column: 'side' }),
+    vote({ row: 'top', column: 'center' }),
+    vote({ row: 'mid', column: 'side' }),
     vote({ row: 'mid', column: 'center' }),
   ])
 
@@ -117,16 +132,17 @@ test('usable frames without a strict majority remain a placement disagreement', 
   assert.deepEqual(result.issues, [PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT])
 })
 
-test('row agreement cannot hide a three-way column disagreement', () => {
+test('row agreement cannot hide a two-versus-two horizontal-region tie', () => {
   const result = assessPlacementEvidence([
-    vote({ column: 'left' }),
+    vote({ column: 'side' }),
     vote({ column: 'center' }),
-    vote({ column: 'right' }),
+    vote({ column: 'side' }),
+    vote({ column: 'center' }),
   ])
 
   assert.equal(result.ready, false)
-  assert.equal(result.counts.rowAgreement, 3)
-  assert.equal(result.counts.columnAgreement, 1)
+  assert.equal(result.counts.rowAgreement, 4)
+  assert.equal(result.counts.columnAgreement, 2)
   assert.deepEqual(result.issues, [PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT])
 })
 

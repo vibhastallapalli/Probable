@@ -31,24 +31,24 @@ const VERDICT_DIMENSIONS = [
   { key: 'placement', label: 'Placement', gloss: 'who found the better spot', points: 2 },
 ]
 
-// Plain-words labels for the 9 exact goal-mouth zones plus the three internal
-// direction-neutral side zones used when a mirror check preserves off-centre
-// placement but cannot verify exact left/right direction.
+// Plain-words labels for the legacy exact goal-mouth zones plus the three
+// direction-neutral side zones used by real scoring. Runtime intentionally
+// asks center versus side because exact left/right has no scoring effect.
 // Keys match the `zone` field the scorer returns; the score is derived from
 // the zone in the main process, so showing both makes any mismatch obvious.
 const ZONE_LABELS = {
   top_left: 'top left corner',
   top_center: 'top center',
   top_right: 'top right corner',
-  top_side: 'top, toward one side (left/right unverified)',
+  top_side: 'top, toward one side',
   mid_left: 'mid-height left',
   mid_center: 'dead center',
   mid_right: 'mid-height right',
-  mid_side: 'mid-height, toward one side (left/right unverified)',
+  mid_side: 'mid-height, toward one side',
   bottom_left: 'bottom left corner',
   bottom_center: 'bottom center',
   bottom_right: 'bottom right corner',
-  bottom_side: 'low, toward one side (left/right unverified)',
+  bottom_side: 'low, toward one side',
 }
 
 // Fallback so the status badge renders even before the main process replies.
@@ -510,7 +510,7 @@ export default function App () {
             emit(`Clip ${side}: placement recovered using additional nearby moments`)
           }
           if (result.placementReport?.directionNeutral) {
-            emit(`Clip ${side}: mirror preserved row and off-centre placement; exact left/right was not used`)
+            emit(`Clip ${side}: mirror preserved height and off-centre placement; exact left/right is intentionally not scored`)
           }
           if (result.placementReport?.heightCorrected) {
             emit(`Clip ${side}: ground-reference check corrected the placement height to low`)
@@ -1285,7 +1285,7 @@ function PredictTab ({ address }) {
         pEmit('Placement recovered using additional nearby moments')
       }
       if (result.placementReport?.directionNeutral) {
-        pEmit('Mirror preserved row and off-centre placement; exact left/right was not used')
+        pEmit('Mirror preserved height and off-centre placement; exact left/right is intentionally not scored')
       }
       if (result.placementReport?.heightCorrected) {
         pEmit('Ground-reference check corrected the placement height to low')

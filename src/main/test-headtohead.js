@@ -26,8 +26,11 @@ const scoring = require('./scoring')
 
 const PLACEMENT_ZONE_PHRASES = {
   top_left: 'top left corner', top_center: 'top middle', top_right: 'top right corner',
+  top_side: 'top, toward one side',
   mid_left: 'mid-height left', mid_center: 'dead center', mid_right: 'mid-height right',
+  mid_side: 'mid-height, toward one side',
   bottom_left: 'bottom left corner', bottom_center: 'bottom middle', bottom_right: 'bottom right corner',
+  bottom_side: 'low, toward one side',
 }
 
 async function judge (label, videoPath) {

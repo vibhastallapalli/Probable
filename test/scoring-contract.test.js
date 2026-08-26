@@ -21,6 +21,7 @@ function vote (overrides = {}) {
     ball_visibility: 'visible',
     goal_visibility: 'full',
     ball_goal_relation: 'in_or_entering',
+    shot_moment: 'arrival',
     ball_ground_proximity: 'clear_air',
     row: 'top',
     column: 'center',
@@ -93,6 +94,34 @@ test('failed initial evidence can become RECOVERED on unused frames', async () =
   assert.equal(model.calls(), 6)
 })
 
+test('Player A aftermath frames cannot turn a lifted arrival into a bottom placement', async () => {
+  const fallenInNet = vote({
+    shot_moment: 'aftermath',
+    ball_ground_proximity: 'near_ground',
+    row: 'bottom',
+    column: 'side',
+  })
+  const liftedArrival = vote({
+    shot_moment: 'arrival',
+    ball_ground_proximity: 'clear_air',
+    row: 'top',
+    column: 'center',
+  })
+  const model = mockSdk([
+    fallenInNet, fallenInNet, fallenInNet,
+    liftedArrival, liftedArrival, liftedArrival,
+  ])
+
+  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+
+  assert.equal(result.status, 'RECOVERED')
+  assert.equal(result.row, 'top')
+  assert.equal(result.column, 'center')
+  assert.equal(result.evidence.initial.counts.aftermath, 3)
+  assert.equal(result.evidence.initial.counts.usable, 0)
+  assert.equal(model.calls(), 6)
+})
+
 test('failed initial and recovery evidence remains UNRESOLVED with feedback', async () => {
   const missing = vote({
     ball_visibility: 'not_visible',
@@ -109,42 +138,42 @@ test('failed initial and recovery evidence remains UNRESOLVED with feedback', as
   assert.equal(model.calls(), 6)
 })
 
-test('a side placement must pass the mirrored-image check', async () => {
-  const left = vote({ column: 'left' })
-  const mirroredRight = vote({ column: 'right' })
-  const model = mockSdk([left, left, left, mirroredRight])
+test('an off-centre placement must remain side under the mirrored-image check', async () => {
+  const side = vote({ column: 'side' })
+  const model = mockSdk([side, side, side, side])
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'CLEAR')
-  assert.equal(result.column, 'left')
+  assert.equal(result.column, 'side')
+  assert.equal(result.directionNeutral, true)
   assert.equal(result.evidence.mirrorChecks[0].passed, true)
   assert.equal(model.calls(), 4)
 })
 
-test('Player B ground evidence corrects a contradictory mid-height label to bottom-left', async () => {
-  const reportedMidLeft = vote({
+test('Player B ground evidence corrects a contradictory mid-height label to bottom-side', async () => {
+  const reportedMidSide = vote({
     row: 'mid',
-    column: 'left',
+    column: 'side',
     ball_ground_proximity: 'near_ground',
-    explanation: 'The ball appears waist high on the left.',
+    explanation: 'The ball appears waist high near a post.',
   })
-  const mirroredMidRight = vote({
+  const mirroredMidSide = vote({
     row: 'mid',
-    column: 'right',
+    column: 'side',
     ball_ground_proximity: 'near_ground',
   })
   const model = mockSdk([
-    reportedMidLeft,
-    reportedMidLeft,
-    reportedMidLeft,
-    mirroredMidRight,
+    reportedMidSide,
+    reportedMidSide,
+    reportedMidSide,
+    mirroredMidSide,
   ])
 
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.row, 'bottom')
-  assert.equal(result.column, 'left')
+  assert.equal(result.column, 'side')
   assert.equal(result.heightCorrected, true)
   assert.equal(result.evidence.initial.counts.heightCorrected, 3)
   assert.equal(result.evidence.mirrorChecks[0].observedRow, 'bottom')
@@ -152,13 +181,11 @@ test('Player B ground evidence corrects a contradictory mid-height label to bott
   assert.equal(model.calls(), 4)
 })
 
-test('a chirality-only mirror mismatch keeps an honest direction-neutral side zone', async () => {
-  // Reproduces PlayerA_test_1: three mid/right observations followed by a
-  // mirrored observation that incorrectly remains mid/right.
+test('legacy directional words are discarded rather than displayed as exact left or right', async () => {
   const right = vote({ row: 'mid', column: 'right' })
   const model = mockSdk([
     right, right, right,
-    right, // mirror preserved off-centre placement but did not flip direction
+    right,
   ])
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
 
@@ -174,12 +201,12 @@ test('a chirality-only mirror mismatch keeps an honest direction-neutral side zo
 })
 
 test('mirror checks that lose side-vs-center evidence remain unresolved', async () => {
-  const left = vote({ column: 'left' })
+  const side = vote({ column: 'side' })
   const center = vote({ column: 'center' })
   const model = mockSdk([
-    left, left, left,
+    side, side, side,
     center, // initial mirror lost the off-centre class
-    left, left, left,
+    side, side, side,
     center, // recovery mirror failed the same invariant
   ])
   const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
@@ -220,14 +247,14 @@ test('placement copy is composed from the corrected zone instead of raw model pr
   }, {
     status: 'CLEAR',
     row: 'bottom',
-    column: 'left',
+    column: 'side',
     explanation: 'The full goal is visible and the ball is waist high on the left.',
     heightCorrected: true,
   }, {})
 
-  assert.equal(scored.scores.placement.zone, 'bottom_left')
+  assert.equal(scored.scores.placement.zone, 'bottom_side')
   assert.equal(scored.scores.placement.heightCorrected, true)
-  assert.equal(scored.scores.placement.explanation, 'The ball went in low by the left post.')
+  assert.equal(scored.scores.placement.explanation, 'The ball went in low toward one side of the goal.')
   assert.doesNotMatch(scored.scores.placement.explanation, /waist|full goal/i)
 })
 
@@ -236,6 +263,50 @@ test('judge rubric excludes placement from the other criteria and anchors the fu
   assert.match(scoring.JUDGE_RUBRIC, /Use the full scale conservatively/i)
   assert.match(scoring.JUDGE_RUBRIC, /Missing evidence earns no extra credit/i)
   assert.doesNotMatch(scoring.JUDGE_RUBRIC, /settled finishing spot/i)
+})
+
+test('clip facts discard invented prose fields and invalid category values', () => {
+  const facts = scoring.normalizeClipFacts({
+    shooter_distance: 'medium',
+    shot_speed: 'ridiculously_fast',
+    kicking_foot: 'right',
+    contact_type: 'laces',
+    dribbling: 'none',
+    pressure: 'none',
+    body_position: 'balanced',
+    ball_motion: 'low_driven',
+    goal_outcome: 'scored',
+    footwear: 'barefoot',
+    both_feet_contacted: true,
+    story: 'A beautiful strike under the lights.',
+  })
+
+  assert.equal(facts.shooter_distance, 'medium')
+  assert.equal(facts.shot_speed, 'unclear')
+  assert.equal(facts.kicking_foot, 'right')
+  assert.equal(facts.footwear, undefined)
+  assert.equal(facts.both_feet_contacted, undefined)
+  assert.equal(facts.story, undefined)
+})
+
+test('judge receives only normalized non-placement facts', () => {
+  const text = scoring.clipFactsForJudge({
+    shooter_distance: 'medium',
+    shot_speed: 'medium',
+    kicking_foot: 'right',
+    contact_type: 'unclear',
+    dribbling: 'none',
+    pressure: 'none',
+    body_position: 'balanced',
+    ball_motion: 'rolling',
+    goal_outcome: 'scored',
+    footwear: 'barefoot',
+  })
+
+  assert.match(text, /Shooter distance: medium/)
+  assert.match(text, /Contact type: unclear/)
+  assert.match(text, /Ball motion: rolling/)
+  assert.doesNotMatch(text, /barefoot|footwear|goal outcome|scored/i)
 })
 
 test('a technical placement call is retried on the same evidence', async () => {

@@ -9,7 +9,7 @@ the policy for contradictory rules and reachable bad outcomes.
 
 - `PlacementDecision` represents the result of the placement pipeline.
 - `placementResolved` says whether repeated evidence produced a supported
-  row and either an exact column or a direction-neutral side class.
+  row and a center-versus-side class.
 - `recoveryAttempted` separates the initial three-frame check from the one
   bounded visual recovery.
 - The four reason measures represent ball, goal, shot-moment, and placement
@@ -19,20 +19,31 @@ the policy for contradictory rules and reachable bad outcomes.
 - `MatchSettlementRequested` and `matchHasUnresolvedClip` represent the final
   payout guard.
 
-## Mirror degradation without invented placement
+## Transformation-stable horizontal placement
 
-Left and right carry identical placement points. When a horizontal mirror
-preserves ball visibility, the full goal, the ball/goal relationship, the row,
-and the fact that the finish is off-centre—but Qwen fails to reverse the exact
-left/right word—the implementation discards only that unsupported direction.
-It assigns an internal `side` class with the same score and tells the user that
-left/right was not verified. If any invariant fact changes, or the mirrored
-answer changes between side and centre, placement remains unresolved and the
-existing SLEEC fallback rules still block scoring and settlement.
+Left and right carry identical placement points, and testing the real clips
+showed that a model can flip its directional word under mirroring while still
+assigning the wrong semantic side to the original clip. Runtime evidence
+therefore asks only the scoring-relevant question: is the finish in the center
+third or either side third? A horizontal mirror must preserve that class along
+with ball visibility, the full goal, the ball/goal relationship, arrival
+moment, row, and ground proximity. If any invariant changes, placement remains
+unresolved and the existing SLEEC fallback rules block scoring and settlement.
 
 The formal policy does not need another branch for this representation:
-`placementResolved` is true only after the direction-neutral class itself has
-the required invariant evidence. No exact left/right claim is assigned.
+`placementResolved` is true only after center-versus-side itself has the
+required invariant evidence. The application never assigns or displays an
+exact left/right claim.
+
+## Arrival versus aftermath
+
+The ball's position after a goal is not necessarily its entry position: a
+lifted finish can fall, bounce, or settle near the turf. Each observation now
+classifies the sampled moment as `arrival`, `aftermath`, or `unclear`. Only an
+`arrival` observation may vote on row and center-versus-side. An initial set
+containing aftermath evidence triggers the same one bounded recovery attempt
+on earlier unused moments; if two supported arrival observations still cannot
+be found, placement stays unresolved.
 
 ## Ground-reference consistency
 
@@ -47,6 +58,11 @@ The final placement sentence is composed from the verified policy result, so
 discarded raw wording cannot reintroduce the wrong row. Placement also remains
 separate from skill, difficulty, and aesthetic judging; an incorrect placement
 observation cannot be repeated across all four score explanations.
+
+The later observation pass is grammar-constrained to closed categories such
+as distance, speed, contact type, pressure, and ball motion. Extra prose and
+unsupported details are discarded before judging, and placement outcome is
+not passed into the other three criteria.
 
 This is another implementation-level refinement inside the formal
 `placementResolved` state. The SLEEC file remains unchanged because no new

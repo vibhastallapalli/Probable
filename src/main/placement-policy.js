@@ -21,8 +21,8 @@ const ISSUE_COPY = Object.freeze({
     suggestion: 'Keep both posts and the crossbar visible throughout the finish.',
   },
   [PLACEMENT_ISSUES.SHOT_MOMENT_NOT_CAPTURED]: {
-    observation: 'The analyzed moments did not consistently show the ball in or entering the goal.',
-    suggestion: 'Include the complete ball path and the moment the shot reaches the goal.',
+    observation: 'The analyzed moments did not consistently preserve the ball arriving at the goal before it fell, bounced, or settled.',
+    suggestion: 'Include the complete ball path and a clear view of the instant the shot crosses into the goal.',
   },
   [PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT]: {
     observation: 'Usable moments produced conflicting placement estimates.',
@@ -31,7 +31,10 @@ const ISSUE_COPY = Object.freeze({
 })
 
 const CLEAR_ROWS = ['top', 'mid', 'bottom']
-const CLEAR_COLUMNS = ['left', 'center', 'right']
+// Exact left/right wording proved unreliable even when it flipped correctly
+// under mirroring. Left and right carry identical points, so runtime evidence
+// asks only the transformation-stable question that matters: center or side.
+const CLEAR_COLUMNS = ['center', 'side']
 
 /**
  * Assess a collection of structured, per-frame placement observations.
@@ -49,7 +52,11 @@ function assessPlacementEvidence (votes, opts = {}) {
     checked: safeVotes.length,
     ballVisible: safeVotes.filter((v) => v.ball_visibility === 'visible').length,
     goalFull: safeVotes.filter((v) => v.goal_visibility === 'full').length,
-    ballAtGoal: safeVotes.filter((v) => v.ball_goal_relation === 'in_or_entering').length,
+    ballAtGoal: safeVotes.filter((v) =>
+      v.ball_goal_relation === 'in_or_entering' &&
+      v.shot_moment === 'arrival'
+    ).length,
+    aftermath: safeVotes.filter((v) => v.shot_moment === 'aftermath').length,
     usable: 0,
     rowAgreement: 0,
     columnAgreement: 0,
@@ -72,6 +79,7 @@ function assessPlacementEvidence (votes, opts = {}) {
     v.ball_visibility === 'visible' &&
     v.goal_visibility === 'full' &&
     v.ball_goal_relation === 'in_or_entering' &&
+    v.shot_moment === 'arrival' &&
     CLEAR_ROWS.includes(v.row) &&
     CLEAR_COLUMNS.includes(v.column)
   )

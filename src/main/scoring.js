@@ -31,8 +31,8 @@ const {
 // Scoring prompts — tune the rubric here. Scoring runs in three stages so the
 // model commits to what it can actually see before it judges anything:
 //
-//   Stage 1 (placement readiness, one ordered image pair per call): each target
-//   image reports ball visibility, full-goal visibility, ball/goal relation,
+//   Stage 1 (placement readiness, one ordered composite per call): each target
+//   half reports ball visibility, full-goal visibility, ball/goal relation,
 //   whether the before→target transition preserves arrival rather than its
 //   aftermath, ground proximity, row, and center-versus-side. Aftermath images
 //   cannot vote on entry height.
@@ -197,15 +197,17 @@ Ground rules: mention only people, objects, and events the fact list
 reports. Never invent players, a goalkeeper, defenders, or a crowd it does
 not mention, and do not fill gaps with general football knowledge.`
 
-// Placement pass prompt — sent with an ordered before/target image pair. A
+// Placement pass prompt — sent with one ordered before/target composite. A
 // single still could not distinguish a lifted ball entering high from the same
 // ball later falling to the turf in the net; the preceding image supplies the
-// temporal evidence needed to make that distinction. The judge pass never
-// picks the zone.
-const PLACEMENT_PROMPT = `You are looking at TWO ordered still frames from a short football (soccer) clip.
-IMAGE 1 comes immediately before IMAGE 2. Answer every visual field for IMAGE
-2, using IMAGE 1 only to determine whether IMAGE 2 shows the incoming shot or
-what happened after it entered. Do not describe or score IMAGE 1 separately.
+// temporal evidence needed to make that distinction. Both moments are joined
+// into ONE image because repeated multi-attachment calls crash some Windows
+// QVAC/llama.cpp workers. The judge pass never picks the zone.
+const PLACEMENT_PROMPT = `You are looking at ONE side-by-side composite made from two ordered still moments in a short football (soccer) clip.
+The LEFT half is BEFORE. The RIGHT half is TARGET and comes immediately after
+BEFORE. Answer every visual field for TARGET, using BEFORE only to determine
+whether TARGET shows the incoming shot or what happened after it entered. Do
+not describe or score BEFORE separately.
 
 First report the visual evidence. These fields are separate so that a missing
 ball, an incomplete goal, and a disagreement about placement never get treated
@@ -222,27 +224,27 @@ goal_visibility — whether the goal mouth can be used as a complete reference:
 - not_visible: no usable goal is visible
 - unclear: you cannot tell whether the complete goal frame is present
 
-before_ball_goal_relation — where the visible ball is in IMAGE 1:
+before_ball_goal_relation — where the visible ball is in the LEFT BEFORE half:
 - in_or_entering: the ball is already inside, crossing into, or clearly
   entering the goal
 - outside: the ball is visibly outside and not yet entering the goal
 - unclear: the ball's relationship to the goal cannot be determined
 
-ball_goal_relation — what the visible ball is doing in IMAGE 2:
+ball_goal_relation — what the visible ball is doing in the RIGHT TARGET half:
 - in_or_entering: the ball is inside, crossing into, or clearly entering the goal
 - outside: the ball is visibly outside and not entering the goal
 - unclear: the ball's relationship to the goal cannot be determined
 
-shot_moment — whether IMAGE 2 preserves the ball's incoming height:
-- arrival: IMAGE 1 shows the ball outside or approaching the goal and IMAGE 2
+shot_moment — whether TARGET preserves the ball's incoming height:
+- arrival: BEFORE shows the ball outside or approaching the goal and TARGET
   shows it reaching, crossing, or only just passing the goal line on the same
   incoming path
-- aftermath: the ball is already inside the goal in IMAGE 1 and remains,
-  falls, rolls, rests, or bounces inside the goal in IMAGE 2
+- aftermath: the ball is already inside the goal in BEFORE and remains,
+  falls, rolls, rests, or bounces inside the goal in TARGET
 - unclear: the two images do not establish which of those transitions occurred
 
-Do not call IMAGE 2 arrival merely because its ball is inside the goal. If the
-ball was already inside in IMAGE 1, IMAGE 2 is aftermath and its current height
+Do not call TARGET arrival merely because its ball is inside the goal. If the
+ball was already inside in BEFORE, TARGET is aftermath and its current height
 cannot reveal the entry height.
 
 ball_ground_proximity — compare the bottom of the visible ball with the turf
@@ -253,7 +255,7 @@ or the line joining the bottoms of the two goalposts:
   the bottom of the ball from that level
 - unclear: the ball or ground reference is not clear enough to compare
 
-Only when the ball is visible in IMAGE 2, the full goal is visible, the ball is
+Only when the ball is visible in TARGET, the full goal is visible, the ball is
 in or entering the goal, AND shot_moment is arrival, report its position as a
 row and a column. If shot_moment is aftermath or unclear, answer unclear for
 ball_ground_proximity, row, and column. Never use a ball lying, falling, or
@@ -576,6 +578,14 @@ const PLACEMENT_RECOVERY_FRAME_COUNT =
 // A failed or malformed ordered-pair model response is retried once against
 // the same evidence. This is a system recovery, not a clip-quality judgment.
 const PLACEMENT_CALL_ATTEMPTS = 2
+
+// The four-category observation pass does not need every dense placement
+// sample. Keeping an evenly spaced subset reduces the size of its one large
+// multimodal request and leaves extra native/context headroom on Windows.
+const FACT_FRAME_COUNT = Math.max(
+  2,
+  Number(process.env.QVAC_FACT_FRAMES) || 10
+)
 
 // How many key frames per clip the head-to-head pass sends. Both clips must
 // share one context window: at the FRAME_MAX_EDGE cap a 16:9 frame costs
@@ -991,9 +1001,10 @@ async function scoreClip (frames, metadata = {}) {
     throw new Error('Resolved placement did not map to a valid goal zone')
   }
 
+  const factFrames = selectFactFrames(frames, FACT_FRAME_COUNT)
   const durationLine = metadata.duration
-    ? `\nClip duration: ${metadata.duration.toFixed(1)}s across ${frames.length} sampled frames.`
-    : `\n${frames.length} sampled frames.`
+    ? `\nClip duration: ${metadata.duration.toFixed(1)}s. The ${factFrames.length} attached moments are selected from ${frames.length} sampled moments across the clip.`
+    : `\nThe ${factFrames.length} attached moments are selected from ${frames.length} sampled moments across the clip.`
 
   // Stage 2 — observe. Frames attached, closed-category JSON out. This
   // expensive pass is skipped entirely when placement evidence is unresolved.
@@ -1003,7 +1014,7 @@ async function scoreClip (frames, metadata = {}) {
     history: [{
       role: 'user',
       content: DESCRIBE_PROMPT + durationLine,
-      attachments: frames.map((p) => ({ path: p })),
+      attachments: factFrames.map((p) => ({ path: p })),
     }],
     responseFormat: {
       type: 'json_schema',
@@ -1496,21 +1507,41 @@ function publicAssessment (assessment) {
 }
 
 // One ordered-pair placement question, grammar-locked to the row/column enums.
-function askPlacement (sdk, modelId, contextFramePath, targetFramePath) {
+// The pair is encoded as one image attachment to avoid a reproducible native
+// worker crash in QVAC's repeated two-attachment request path on Windows.
+async function askPlacement (sdk, modelId, contextFramePath, targetFramePath) {
+  const compositePath = await composePlacementPair(
+    contextFramePath,
+    targetFramePath
+  )
   return runCompletion(sdk, modelId, {
     history: [{
       role: 'user',
       content: PLACEMENT_PROMPT,
-      attachments: [
-        { path: contextFramePath },
-        { path: targetFramePath },
-      ],
+      attachments: [{ path: compositePath }],
     }],
     responseFormat: {
       type: 'json_schema',
       json_schema: { name: 'placement_zone', schema: placementField },
     },
   })
+}
+
+// Join two equal-size extracted moments without changing either one's pixels:
+// BEFORE occupies the left half and TARGET the right half. The output is kept
+// beside the target and reused by technical retries.
+async function composePlacementPair (contextFramePath, targetFramePath) {
+  const out = targetFramePath.replace(/\.png$/i, '.pair.png')
+  if (!fs.existsSync(out)) {
+    await execFileAsync(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', contextFramePath,
+      '-i', targetFramePath,
+      '-filter_complex', '[0:v][1:v]hstack=inputs=2[pair]',
+      '-map', '[pair]', '-frames:v', '1', out,
+    ])
+  }
+  return out
 }
 
 // Horizontally mirrored copy of a frame for the transformation-consistency
@@ -1669,6 +1700,22 @@ function selectComparisonFrames (frames, count = COMPARE_FRAME_COUNT) {
   const picked = new Set()
   for (let i = 0; i < count; i++) {
     picked.add(frames[start + Math.round((i * span) / (count - 1))])
+  }
+  return [...picked]
+}
+
+/**
+ * Keep an evenly spaced view of the whole clip for the four coarse visual
+ * facts. Unlike comparison selection, this includes the earliest moment so
+ * shooter distance and any pre-kick control remain observable.
+ */
+function selectFactFrames (frames, count = FACT_FRAME_COUNT) {
+  if (count <= 1) return frames.slice(0, 1)
+  if (frames.length <= count) return [...frames]
+  const picked = new Set()
+  const span = frames.length - 1
+  for (let i = 0; i < count; i++) {
+    picked.add(frames[Math.round((i * span) / (count - 1))])
   }
   return [...picked]
 }
@@ -2196,6 +2243,7 @@ module.exports = {
   canCompareHeadToHead,
   hasResolvedPlacement,
   selectComparisonFrames,
+  selectFactFrames,
   normalizeClipFacts,
   clipFactsForJudge,
   finalizeScore,

@@ -46,7 +46,11 @@ target is aftermath and cannot vote on row or center-versus-side—even if
 Qwen's separate moment label says `arrival`. An
 initial set containing aftermath evidence triggers the same one bounded
 recovery attempt on earlier unused moments; if two supported arrival
-observations still cannot be found, placement stays unresolved.
+observations still cannot be found, placement stays unresolved. At runtime the
+two ordered moments are joined as the left and right halves of one composite
+image before QVAC sees them. This preserves the same transition evidence while
+avoiding a native worker failure observed with repeated two-image requests on
+Windows.
 
 ## Ground-reference consistency
 

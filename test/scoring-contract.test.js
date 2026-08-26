@@ -71,9 +71,9 @@ test('initial quorum produces a CLEAR placement without recovery', async () => {
       request.history[0].attachments.map((attachment) => attachment.path)
     ),
     [
-      ['f3.png', 'f4.png'],
-      ['f4.png', 'f5.png'],
-      ['f5.png', 'f6.png'],
+      ['f4.pair.png'],
+      ['f5.pair.png'],
+      ['f6.pair.png'],
     ]
   )
 })
@@ -312,6 +312,19 @@ test('clip facts discard invented prose fields and invalid category values', () 
   assert.equal(facts.footwear, undefined)
   assert.equal(facts.both_feet_contacted, undefined)
   assert.equal(facts.story, undefined)
+})
+
+test('clip facts use a bounded sample that still spans the whole clip', () => {
+  const sixteenFrames = Array.from(
+    { length: 16 },
+    (_, index) => `frame-${String(index + 1).padStart(4, '0')}.png`
+  )
+  const picked = scoring.selectFactFrames(sixteenFrames, 10)
+
+  assert.equal(picked.length, 10)
+  assert.equal(picked[0], sixteenFrames[0])
+  assert.equal(picked.at(-1), sixteenFrames.at(-1))
+  assert.equal(new Set(picked).size, picked.length)
 })
 
 test('judge receives only normalized non-placement facts', () => {

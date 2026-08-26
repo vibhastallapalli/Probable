@@ -20,7 +20,7 @@ function observation (overrides = {}) {
   return {
     ball_visibility: 'visible',
     goal_visibility: 'full',
-    ball_goal_relation: 'in_or_entering',
+    ball_goal_stage: 'inside_goal',
     ball_ground_proximity: 'clear_air',
     row: 'top',
     column: 'center',
@@ -31,7 +31,7 @@ function observation (overrides = {}) {
 
 function outside (overrides = {}) {
   return observation({
-    ball_goal_relation: 'outside',
+    ball_goal_stage: 'in_front',
     ball_ground_proximity: 'unclear',
     row: 'unclear',
     column: 'unclear',
@@ -40,10 +40,17 @@ function outside (overrides = {}) {
   })
 }
 
+function goalPlane (overrides = {}) {
+  return observation({
+    ball_goal_stage: 'at_goal_plane',
+    ...overrides,
+  })
+}
+
 function missing (overrides = {}) {
   return observation({
     ball_visibility: 'not_visible',
-    ball_goal_relation: 'unclear',
+    ball_goal_stage: 'unclear',
     ball_ground_proximity: 'unclear',
     row: 'unclear',
     column: 'unclear',
@@ -181,6 +188,63 @@ test('Player A aftermath frames cannot turn a lifted arrival into a bottom place
   assert.equal(model.calls(), 6)
 })
 
+test('Player A uses the high goal-plane position before the ball falls low in the net', async () => {
+  const highSideAtLine = goalPlane({
+    ball_ground_proximity: 'clear_air',
+    row: 'top',
+    column: 'side',
+  })
+  const highSideInside = observation({
+    ball_ground_proximity: 'clear_air',
+    row: 'top',
+    column: 'side',
+  })
+  const fallenLowInside = observation({
+    ball_ground_proximity: 'near_ground',
+    row: 'bottom',
+    column: 'side',
+  })
+  const model = mockObservationSdk({
+    'f2.png': highSideAtLine,
+    'f3.png': highSideAtLine,
+    'f4.png': highSideInside,
+    'f5.png': fallenLowInside,
+    'f6.png': fallenLowInside,
+    'f3.mirror.png': highSideAtLine,
+    'f5.mirror.png': fallenLowInside,
+  })
+
+  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+
+  assert.equal(result.status, 'CLEAR')
+  assert.equal(result.row, 'top')
+  assert.equal(result.column, 'side')
+  assert.equal(result.evidence.initial.counts.usable, 2)
+  assert.equal(result.evidence.initial.counts.aftermath, 1)
+  assert.equal(result.evidence.mirrorChecks[0].passed, true)
+  assert.equal(model.calls(), 7)
+})
+
+test('a foreground ball projected over the goal cannot become fake low placement evidence', async () => {
+  const foregroundProjection = outside({
+    // Deliberately contradictory model fields: normalization must discard
+    // them because the ball has not reached the goal plane.
+    ball_ground_proximity: 'near_ground',
+    row: 'bottom',
+    column: 'side',
+  })
+  const model = mockObservationSdk(Object.fromEntries(
+    frames.map((frame) => [frame, foregroundProjection])
+  ))
+
+  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+
+  assert.equal(result.status, 'UNRESOLVED')
+  assert.equal(result.evidence.combined.counts.usable, 0)
+  assert.deepEqual(result.issues, ['SHOT_MOMENT_NOT_CAPTURED'])
+  assert.equal(model.calls(), 6)
+})
+
 test('failed initial and recovery evidence remains UNRESOLVED with feedback', async () => {
   const model = mockObservationSdk(Object.fromEntries(
     frames.map((frame) => [frame, missing()])
@@ -225,13 +289,18 @@ test('Player B ground evidence corrects a contradictory mid-height label to bott
     column: 'side',
     ball_ground_proximity: 'near_ground',
   })
+  const reportedMidSideAtLine = goalPlane({
+    row: 'mid',
+    column: 'side',
+    ball_ground_proximity: 'near_ground',
+  })
   const model = mockObservationSdk({
     'f2.png': outside(),
-    'f3.png': outside(),
+    'f3.png': reportedMidSideAtLine,
     'f4.png': reportedMidSide,
     'f5.png': reportedMidSide,
     'f6.png': reportedMidSide,
-    'f3.mirror.png': outside(),
+    'f3.mirror.png': reportedMidSideAtLine,
     'f5.mirror.png': mirroredMidSide,
   })
 

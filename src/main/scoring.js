@@ -220,10 +220,19 @@ goal_visibility — whether the goal mouth can be used as a complete reference:
 - not_visible: no usable goal is visible
 - unclear: you cannot tell whether the complete goal frame is present
 
-ball_goal_relation — where the visible ball currently is relative to the goal:
-- in_or_entering: the ball is inside, crossing into, or clearly entering the goal
-- outside: the ball is visibly outside and not entering the goal
-- unclear: the ball's relationship to the goal cannot be determined
+ball_goal_stage — the ball's CURRENT depth relative to the goal line:
+- in_front: the ball is still on the camera/pitch side of the goal line
+- at_goal_plane: the ball is at or crossing the goal line between the posts
+- inside_goal: the ball is clearly beyond the goal line inside the goal/net
+- unclear: the depth relationship cannot be determined from this still
+
+Decide ball_goal_stage before deciding height. Perspective is the main trap:
+a foreground ball can appear inside the goal's rectangular outline while it is
+still many metres in front of the goal. If the ball is visibly much larger than
+it would be at the goal, is still on the open pitch, or merely overlaps the goal
+in the 2-D picture, answer in_front — NEVER at_goal_plane or inside_goal. Use
+at_goal_plane only when the ball has actually reached the mouth/line of the
+goal. When depth is ambiguous, answer unclear instead of guessing.
 
 ball_ground_proximity — compare the bottom of the visible ball with the turf
 or the line joining the bottoms of the two goalposts:
@@ -233,11 +242,12 @@ or the line joining the bottoms of the two goalposts:
   the bottom of the ball from that level
 - unclear: the ball or ground reference is not clear enough to compare
 
-Only when the ball is visible, the full goal is visible, and the ball is in or
-entering the goal, report its CURRENT position as a row and a column. If any
-of those conditions is missing, answer unclear for ball_ground_proximity, row,
-and column. JavaScript will compare this observation with an earlier one and
-discard it if it represents aftermath rather than arrival.
+Only when the ball is visible, the full goal is visible, and ball_goal_stage is
+at_goal_plane or inside_goal, report its CURRENT position as a row and a
+column. If any of those conditions is missing, answer unclear for
+ball_ground_proximity, row, and column. JavaScript will compare this observation
+with an earlier one, use the at_goal_plane observation as the entry position,
+and discard later inside_goal observations after the ball falls or bounces.
 
 Everything is from the CAMERA'S point of view — the picture exactly as you
 see it. Never answer from the shooter's or the goalkeeper's point of view.
@@ -410,7 +420,7 @@ const placementField = {
   properties: {
     ball_visibility: { type: 'string', enum: ['visible', 'not_visible', 'unclear'] },
     goal_visibility: { type: 'string', enum: ['full', 'partial', 'not_visible', 'unclear'] },
-    ball_goal_relation: { type: 'string', enum: ['in_or_entering', 'outside', 'unclear'] },
+    ball_goal_stage: { type: 'string', enum: ['in_front', 'at_goal_plane', 'inside_goal', 'unclear'] },
     ball_ground_proximity: { type: 'string', enum: ['near_ground', 'clear_air', 'unclear'] },
     row: { type: 'string', enum: ['top', 'mid', 'bottom', 'unclear'] },
     column: { type: 'string', enum: ['side', 'center', 'unclear'] },
@@ -419,7 +429,7 @@ const placementField = {
   required: [
     'ball_visibility',
     'goal_visibility',
-    'ball_goal_relation',
+    'ball_goal_stage',
     'ball_ground_proximity',
     'row',
     'column',
@@ -1282,8 +1292,8 @@ async function collectPlacementVotes (
     console.log(
       `[qvac] placement evidence ${path.basename(contextFrame)} -> ${path.basename(frame)}: ` +
       `ball=${vote.ball_visibility} goal=${vote.goal_visibility} ` +
-      `transition=${vote.before_ball_goal_relation}->${vote.ball_goal_relation} ` +
-      `moment=${vote.shot_moment} ` +
+      `stage=${vote.before_ball_goal_stage}->${vote.ball_goal_stage} ` +
+      `moment=${vote.shot_moment} source=${vote.evidence_source} ` +
       `ground=${vote.ball_ground_proximity} ` +
       `row=${vote.row}${vote.heightCorrected ? ` (reported=${vote.reportedRow})` : ''} ` +
       `column=${vote.column}`
@@ -1357,6 +1367,28 @@ async function askPlacementWithRetry (sdk, modelId, frame) {
   throw error
 }
 
+const BALL_GOAL_STAGES = Object.freeze([
+  'in_front',
+  'at_goal_plane',
+  'inside_goal',
+  'unclear',
+])
+
+function normalizeBallGoalStage (value, legacyRelation) {
+  if (BALL_GOAL_STAGES.includes(value)) return value
+  // Keeps controlled fixtures and any in-memory evidence from an older app
+  // version readable. Runtime grammar emits ball_goal_stage exclusively.
+  if (legacyRelation === 'outside') return 'in_front'
+  if (legacyRelation === 'in_or_entering') return 'inside_goal'
+  return 'unclear'
+}
+
+function relationForStage (stage) {
+  if (stage === 'at_goal_plane' || stage === 'inside_goal') return 'in_or_entering'
+  if (stage === 'in_front') return 'outside'
+  return 'unclear'
+}
+
 // Normalize one model observation without assigning it an arrival stage. The
 // model reports only the present image; before/after is derived separately.
 function normalizePlacementObservation (observation) {
@@ -1367,19 +1399,18 @@ function normalizePlacementObservation (observation) {
   const goalVisibility = ['full', 'partial', 'not_visible', 'unclear'].includes(safe.goal_visibility)
     ? safe.goal_visibility
     : 'unclear'
-  const relationValues = ['in_or_entering', 'outside', 'unclear']
-  const relation = ballVisibility === 'visible' && relationValues.includes(safe.ball_goal_relation)
-    ? safe.ball_goal_relation
+  const stage = ballVisibility === 'visible'
+    ? normalizeBallGoalStage(safe.ball_goal_stage, safe.ball_goal_relation)
     : 'unclear'
   const hasCurrentPosition =
     ballVisibility === 'visible' &&
     goalVisibility === 'full' &&
-    relation === 'in_or_entering'
+    (stage === 'at_goal_plane' || stage === 'inside_goal')
 
   return {
     ball_visibility: ballVisibility,
     goal_visibility: goalVisibility,
-    ball_goal_relation: relation,
+    ball_goal_stage: stage,
     ball_ground_proximity: hasCurrentPosition &&
       ['near_ground', 'clear_air', 'unclear'].includes(safe.ball_ground_proximity)
       ? safe.ball_ground_proximity
@@ -1395,12 +1426,45 @@ function normalizePlacementObservation (observation) {
 }
 
 function combinePlacementObservations (before, target) {
+  const beforeStage = normalizeBallGoalStage(before?.ball_goal_stage)
+  const targetStage = normalizeBallGoalStage(target?.ball_goal_stage)
+  let evidence = target
+  let evidenceSource = 'none'
+  let shotMoment = 'unclear'
+
+  // Prefer the still that actually shows the ball at the goal plane. If the
+  // next sample already shows it inside the net, the earlier plane observation
+  // retains the entry height before gravity, a bounce, or net movement changes
+  // the ball's position. A direct in-front→inside jump is accepted only as a
+  // sampled crossing gap and uses the first inside position. Reversals from
+  // inside back to the goal plane are rejected as inconsistent evidence.
+  if (targetStage === 'at_goal_plane' && beforeStage !== 'inside_goal') {
+    evidence = target
+    evidenceSource = 'target_goal_plane'
+    shotMoment = 'arrival'
+  } else if (beforeStage === 'at_goal_plane' && targetStage === 'inside_goal') {
+    evidence = before
+    evidenceSource = 'context_goal_plane'
+    shotMoment = 'arrival'
+  } else if (beforeStage === 'in_front' && targetStage === 'inside_goal') {
+    evidence = target
+    evidenceSource = 'first_inside_after_front'
+    shotMoment = 'arrival'
+  } else if (beforeStage === 'inside_goal' && targetStage === 'inside_goal') {
+    evidence = target
+    evidenceSource = 'inside_aftermath'
+    shotMoment = 'aftermath'
+  }
+
   return normalizePlacementVote({
-    ...target,
-    before_ball_goal_relation: before.ball_goal_relation,
-    // Kept only as a trace field. normalizePlacementVote derives the actual
-    // stage from the two independently observed spatial relationships.
-    shot_moment: 'unclear',
+    ...evidence,
+    before_ball_goal_stage: beforeStage,
+    ball_goal_stage: targetStage,
+    evidence_ball_goal_stage: normalizeBallGoalStage(evidence?.ball_goal_stage),
+    before_ball_goal_relation: relationForStage(beforeStage),
+    ball_goal_relation: relationForStage(targetStage),
+    shot_moment: shotMoment,
+    evidence_source: evidenceSource,
   })
 }
 
@@ -1411,7 +1475,7 @@ function combinePlacementObservations (before, target) {
 // ball/goal/shot-moment failure.
 function normalizePlacementVote (vote) {
   const safe = vote && typeof vote === 'object' ? vote : {}
-  const reportedShotMoment = ['arrival', 'aftermath', 'unclear'].includes(safe.shot_moment)
+  const shotMoment = ['arrival', 'aftermath', 'unclear'].includes(safe.shot_moment)
     ? safe.shot_moment
     : 'unclear'
   const relationValues = ['in_or_entering', 'outside', 'unclear']
@@ -1421,15 +1485,6 @@ function normalizePlacementVote (vote) {
   const targetRelation = relationValues.includes(safe.ball_goal_relation)
     ? safe.ball_goal_relation
     : 'unclear'
-  // Derive temporal stage from two independently committed spatial facts.
-  // The real model called an in-goal→in-goal transition `arrival`; trusting
-  // that label recreated the exact Player A aftermath bug. A conservative
-  // transition table is auditable and cannot be overridden by the prose label.
-  const shotMoment = beforeRelation === 'outside' && targetRelation === 'in_or_entering'
-    ? 'arrival'
-    : beforeRelation === 'in_or_entering' && targetRelation === 'in_or_entering'
-      ? 'aftermath'
-      : 'unclear'
   const reportedRow = ['top', 'mid', 'bottom', 'unclear'].includes(safe.row)
     ? safe.row
     : 'unclear'
@@ -1458,7 +1513,6 @@ function normalizePlacementVote (vote) {
     ...safe,
     before_ball_goal_relation: beforeRelation,
     ball_goal_relation: targetRelation,
-    reportedShotMoment,
     shot_moment: shotMoment,
     ball_ground_proximity: hasUsableSceneEvidence ? ground : 'unclear',
     reportedRow,
@@ -1469,7 +1523,6 @@ function normalizePlacementVote (vote) {
     column: hasUsableSceneEvidence ? reportedColumn : 'unclear',
     heightCorrected,
     aftermathDiscarded,
-    momentCorrected: reportedShotMoment !== shotMoment,
   }
 }
 
@@ -1575,8 +1628,8 @@ async function verifyPlacementMirror (
 
   console.log(
     `[qvac] placement mirror check: ` +
-    `transition=${mirrored.before_ball_goal_relation}->${mirrored.ball_goal_relation} ` +
-    `moment=${mirrored.shot_moment} ` +
+    `stage=${mirrored.before_ball_goal_stage}->${mirrored.ball_goal_stage} ` +
+    `moment=${mirrored.shot_moment} source=${mirrored.evidence_source} ` +
     `ground=${mirrored.ball_ground_proximity} ` +
     `row=${mirrored.row}${mirrored.heightCorrected ? ` (reported=${mirrored.reportedRow})` : ''} ` +
     `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})`

@@ -23,6 +23,65 @@ function vote (overrides = {}) {
   }
 }
 
+test('placement issue codes remain stable', () => {
+  assert.deepEqual(PLACEMENT_ISSUES, {
+    BALL_NOT_LOCALIZED: 'BALL_NOT_LOCALIZED',
+    GOAL_NOT_CONFIRMED: 'GOAL_NOT_CONFIRMED',
+    SHOT_MOMENT_NOT_CAPTURED: 'SHOT_MOMENT_NOT_CAPTURED',
+    PLACEMENT_DISAGREEMENT: 'PLACEMENT_DISAGREEMENT',
+  })
+})
+
+test('feedback attributes unverified perception without claiming objective absence', () => {
+  const cases = [
+    {
+      issue: PLACEMENT_ISSUES.BALL_NOT_LOCALIZED,
+      expected: 'Probable could not reliably locate the ball in enough analyzed moments.',
+      suggestion: 'Try a clip where the ball stays large and easy to distinguish through the finish.',
+      forbidden: /the ball (?:is|was|is not|was not) visible/i,
+    },
+    {
+      issue: PLACEMENT_ISSUES.GOAL_NOT_CONFIRMED,
+      expected: 'Probable could not reliably confirm the full goal mouth in enough analyzed moments.',
+      suggestion: 'Keep both posts and the crossbar clearly visible through the finish.',
+      forbidden: /the (?:full )?goal (?:is|was|is not|was not) visible/i,
+    },
+    {
+      issue: PLACEMENT_ISSUES.SHOT_MOMENT_NOT_CAPTURED,
+      expected: 'Probable could not reliably verify the ball reaching the goal line before it fell, bounced, or settled.',
+      suggestion: "Use a steadier finish where the ball's arrival at the goal is easy to distinguish.",
+      forbidden: /(?:clip|video) (?:does not|did not|doesn't|didn't) (?:include|show).*cross/i,
+    },
+  ]
+
+  for (const { issue, expected, suggestion, forbidden } of cases) {
+    const feedback = buildPlacementFeedback([issue], { checked: 6, usable: 0 })
+    assert.deepEqual(feedback.observations, [expected])
+    assert.deepEqual(feedback.suggestions, [suggestion])
+    assert.doesNotMatch(
+      [...feedback.observations, ...feedback.suggestions].join(' '),
+      forbidden
+    )
+    assert.equal(feedback.attribution, 'PERCEPTION_UNVERIFIED')
+    assert.equal(feedback.evidenceState, 'INSUFFICIENT_EVIDENCE')
+    assert.equal(feedback.policyDecision, 'POLICY_BLOCKED')
+  }
+})
+
+test('feedback attributes placement disagreement to conflicting evidence', () => {
+  const feedback = buildPlacementFeedback(
+    [PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT],
+    { checked: 6, usable: 4 }
+  )
+
+  assert.deepEqual(feedback.observations, [
+    'Probable found conflicting placement evidence across the usable moments.',
+  ])
+  assert.equal(feedback.attribution, 'EVIDENCE_CONFLICT')
+  assert.equal(feedback.evidenceState, 'CONFLICTING_EVIDENCE')
+  assert.equal(feedback.policyDecision, 'POLICY_BLOCKED')
+})
+
 test('two agreeing usable frames can settle a three-frame attempt', () => {
   const result = assessPlacementEvidence([
     vote(),
@@ -33,6 +92,7 @@ test('two agreeing usable frames can settle a three-frame attempt', () => {
   assert.equal(result.ready, true)
   assert.equal(result.row, 'top')
   assert.equal(result.column, 'side')
+  assert.deepEqual(result.issues, [])
   assert.equal(result.counts.usable, 3)
   assert.equal(result.requiredAgreement, 2)
 })

@@ -13,20 +13,24 @@ const PLACEMENT_ISSUES = Object.freeze({
 
 const ISSUE_COPY = Object.freeze({
   [PLACEMENT_ISSUES.BALL_NOT_LOCALIZED]: {
-    observation: 'Probable could not consistently locate the ball in the analyzed moments.',
-    suggestion: 'Use a clip that keeps the ball visible from the strike through the finish.',
+    observation: 'Probable could not reliably locate the ball in enough analyzed moments.',
+    suggestion: 'Try a clip where the ball stays large and easy to distinguish through the finish.',
+    attribution: 'PERCEPTION_UNVERIFIED',
   },
   [PLACEMENT_ISSUES.GOAL_NOT_CONFIRMED]: {
-    observation: 'Probable could not confirm the full goal mouth in enough analyzed moments.',
-    suggestion: 'Keep both posts and the crossbar visible throughout the finish.',
+    observation: 'Probable could not reliably confirm the full goal mouth in enough analyzed moments.',
+    suggestion: 'Keep both posts and the crossbar clearly visible through the finish.',
+    attribution: 'PERCEPTION_UNVERIFIED',
   },
   [PLACEMENT_ISSUES.SHOT_MOMENT_NOT_CAPTURED]: {
-    observation: 'The analyzed moments did not consistently preserve the ball arriving at the goal before it fell, bounced, or settled.',
-    suggestion: 'Include the complete ball path and a clear view of the instant the shot crosses into the goal.',
+    observation: 'Probable could not reliably verify the ball reaching the goal line before it fell, bounced, or settled.',
+    suggestion: "Use a steadier finish where the ball's arrival at the goal is easy to distinguish.",
+    attribution: 'PERCEPTION_UNVERIFIED',
   },
   [PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT]: {
-    observation: 'Usable moments produced conflicting placement estimates.',
+    observation: 'Probable found conflicting placement evidence across the usable moments.',
     suggestion: 'Try a clearer, steadier clip where the ball is easy to separate from the goal.',
+    attribution: 'EVIDENCE_CONFLICT',
   },
 })
 
@@ -184,13 +188,18 @@ function buildPlacementFeedback (issues, counts, metadata = {}) {
   const observations = uniqueIssues.map((issue) => {
     if (issue === PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT &&
         (Number(counts?.usable) || 0) < 2) {
-      return 'The ball and goal checks did not align in enough of the same analyzed moments.'
+      return 'Probable found conflicting placement evidence because the ball and goal checks did not align in enough of the same analyzed moments.'
     }
     return ISSUE_COPY[issue].observation
   })
   const suggestions = [...new Set(
     uniqueIssues.map((issue) => ISSUE_COPY[issue].suggestion)
   )]
+  const attribution = uniqueIssues.some((issue) =>
+    ISSUE_COPY[issue].attribution === 'EVIDENCE_CONFLICT'
+  )
+    ? 'EVIDENCE_CONFLICT'
+    : 'PERCEPTION_UNVERIFIED'
 
   if (metadata.lowFps) {
     const shownFps = Number.isFinite(metadata.fps)
@@ -209,6 +218,14 @@ function buildPlacementFeedback (issues, counts, metadata = {}) {
     title: 'Placement could not be scored',
     primaryReason: uniqueIssues[0] || PLACEMENT_ISSUES.PLACEMENT_DISAGREEMENT,
     reasons: uniqueIssues,
+    // These fields keep the three layers explicit. They describe the source
+    // of the reported evidence, its sufficiency for scoring, and the policy
+    // outcome; none claims that the underlying video objectively lacks it.
+    attribution,
+    evidenceState: attribution === 'EVIDENCE_CONFLICT'
+      ? 'CONFLICTING_EVIDENCE'
+      : 'INSUFFICIENT_EVIDENCE',
+    policyDecision: 'POLICY_BLOCKED',
     observations,
     suggestions,
     evidence: {

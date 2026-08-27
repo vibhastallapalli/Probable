@@ -321,6 +321,7 @@ test('an off-centre placement must remain side under the mirrored-image check', 
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.column, 'side')
+  assert.equal(result.feedback, undefined)
   assert.equal(result.directionNeutral, true)
   assert.equal(result.evidence.mirrorChecks[0].passed, true)
   assert.equal(model.calls(), 8)

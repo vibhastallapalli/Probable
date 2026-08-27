@@ -127,3 +127,9 @@ does not inspect video, validate Qwen's visual observations, prove that the
 JavaScript is identical to the SLEEC model, or run while a user scores a clip.
 Those implementation details are covered separately by the automated tests
 and by clip-level testing in the app.
+
+The policy operates only over evidence reported by the perception layer. A
+rejection can explain why that evidence was insufficient or inconsistent for
+scoring, but consistent evidence is not necessarily correct evidence. User
+feedback therefore says what Probable could not verify rather than claiming
+that the video objectively lacks a ball, goal, or crossing moment.

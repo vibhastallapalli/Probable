@@ -70,7 +70,7 @@ const SLOT_STATUS = {
   preparing: { text: 'loading model', cls: 'pill' },
   scoring: { text: 'judging…', cls: 'pill pill--warn' },
   done: { text: '✓ judged', cls: 'pill pill--ok' },
-  needs_better_clip: { text: 'new clip needed', cls: 'pill pill--warn' },
+  needs_better_clip: { text: 'placement unverified', cls: 'pill pill--warn' },
   failed: { text: 'failed', cls: 'pill pill--bad' },
 }
 
@@ -147,10 +147,9 @@ function StatusBadge ({ modelInfo, mockMode }) {
   )
 }
 
-// One evidence-based report shared by Judge and Predict mode. Clip-quality
-// problems use the amber treatment; a worker/model failure uses red so the
-// user is never told to replace a perfectly valid clip because the system
-// itself failed.
+// One evidence-based report shared by Judge and Predict mode. Placement-policy
+// reports use the amber treatment; a worker/model failure uses red so the user
+// is never told the clip objectively lacks evidence that Probable failed to see.
 function ClipIssue ({ issue }) {
   if (!issue) return null
   const technical = issue.code === 'ANALYSIS_ERROR'
@@ -162,7 +161,12 @@ function ClipIssue ({ issue }) {
       ))}
       {issue.evidence && (
         <div className="clip-issue__evidence">
-          Evidence: {issue.evidence.usable} of {issue.evidence.checked} analyzed moments supported a usable placement.
+          Reported evidence: {issue.evidence.usable} of {issue.evidence.checked} analyzed moments met the placement checks.
+        </div>
+      )}
+      {issue.policyDecision === 'POLICY_BLOCKED' && (
+        <div className="clip-issue__evidence">
+          Scoring was blocked because placement could not be verified.
         </div>
       )}
       {issue.suggestions?.length > 0 && (

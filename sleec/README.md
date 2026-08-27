@@ -25,10 +25,13 @@ Left and right carry identical placement points, and testing the real clips
 showed that a model can flip its directional word under mirroring while still
 assigning the wrong semantic side to the original clip. Runtime evidence
 therefore asks only the scoring-relevant question: is the finish in the center
-third or either side third? A horizontal mirror must preserve that class along
-with ball visibility, the full goal, the ball/goal relationship, arrival
-moment, row, and ground proximity. If any invariant changes, placement remains
-unresolved and the existing SLEEC fallback rules block scoring and settlement.
+third or either side third? A horizontal mirror is applied only after temporal
+reasoning has selected a legitimate arrival still. It must preserve the
+center-versus-side class. The mirror does not re-decide depth, and its row is
+recorded only as diagnostic evidence: horizontal consistency cannot prove that
+a vertical label is perceptually correct. If the horizontal class changes,
+placement remains unresolved and the existing SLEEC fallback rules block
+scoring and settlement.
 
 The formal policy does not need another branch for this representation:
 `placementResolved` is true only after center-versus-side itself has the
@@ -38,27 +41,30 @@ exact left/right claim.
 ## Arrival versus aftermath
 
 The ball's position after a goal is not necessarily its entry position: a
-lifted finish can fall, bounce, or settle near the turf. Qwen now sees one
-ordinary frame per request and reports only that frame's ball/goal relation.
-JavaScript compares independently reported observations two sampled moments
-apart and derives `arrival`, `aftermath`, or `unclear` from the transition. If
-the ball was already inside in the earlier observation, the target is aftermath
-and cannot vote on row or center-versus-side. An
+lifted finish can fall, bounce, or settle near the turf. Qwen sees one ordinary
+image per request. A full-frame observation reports that still's ball/goal
+relation; JavaScript compares independently reported observations two sampled
+moments apart and derives `arrival`, `aftermath`, or `unclear` from the
+transition. Only a selected arrival still receives a second, separate request
+on a generically localized goal crop for the simpler row and
+center-versus-side judgment. If the ball was already inside in the earlier
+observation, the target is aftermath and cannot vote on placement. An
 initial set containing aftermath evidence triggers the same one bounded
 recovery attempt on earlier unused moments; if two supported arrival
 observations still cannot be found, placement stays unresolved. Keeping every
-QVAC placement request to one original-size frame avoids the native worker
-failures reproduced with both repeated two-image requests and side-by-side
-composites on Windows.
+QVAC placement request to one ordinary image avoids the native worker failures
+reproduced with both repeated two-image requests and side-by-side composites on
+Windows.
 
 ## Ground-reference consistency
 
-Each placement observation now commits to the ball's proximity to the goal's
-ground level before choosing a row. When the same usable observation says the
-ball is `near_ground` but labels it `mid` or `top`, JavaScript retains the raw
-answer for the evidence trace and corrects the contradictory row to `bottom`.
-It does not use this rule to promote an unclear observation, recover a missing
-ball or goal, or bypass the repeated-frame and mirror checks.
+The full-frame observation reports the ball's proximity to the goal's ground
+level, while the independent goal crop reports row. When the same usable
+arrival says `near_ground` but the crop labels it `mid`, JavaScript retains the
+raw answer for the evidence trace and corrects that ambiguity to `bottom`.
+Ground proximity is not trustworthy enough to override an explicit `top`
+judgment. It also cannot promote an unclear observation, recover a missing ball
+or goal, or bypass the repeated-frame and horizontal-mirror checks.
 
 The final placement sentence is composed from the verified policy result, so
 discarded raw wording cannot reintroduce the wrong row. Placement also remains

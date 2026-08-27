@@ -31,18 +31,16 @@ const {
 // Scoring prompts — tune the rubric here. Scoring runs in three stages so the
 // model commits to what it can actually see before it judges anything:
 //
-//   Stage 1 (placement readiness, one ordinary frame per call): each frame
-//   reports only its own ball/goal relationship and current position.
-//   JavaScript compares observations two sampled moments apart to derive an
-//   outside→inside arrival or an inside→inside aftermath. QVAC never receives
-//   a multi-image or composite placement request.
-//   Ground proximity is committed before the row, so a ball visibly on the
-//   turf cannot survive as a middle-height answer. At least two usable
+//   Stage 1 (placement readiness, one ordinary image per call): full frames
+//   report their own ball/goal relationship. JavaScript compares observations
+//   two sampled moments apart to derive an outside→inside arrival or an
+//   inside→inside aftermath. Only a selected arrival still gets a separate
+//   simple row/column request on a generically localized goal crop. QVAC never
+//   receives a multi-image or composite placement request. At least two usable
 //   observations and a strict majority are required. A failed first attempt
 //   gets one targeted retry with unused nearby moments. An off-centre result
-//   is checked on a mirrored image and must remain off-centre; exact left/right
-//   is never claimed because both sides score identically and the model's
-//   chirality label proved unreliable on the real clips.
+//   is checked on a mirrored goal crop and must remain off-centre; the mirror
+//   does not re-decide depth or validate row. Exact left/right is never claimed.
 //   Stage 2 (observe, frames attached): report only a closed set of visible
 //   facts: shooter distance, shot speed, dribbling, and ball motion.
 //   Unsupported details become `unclear`; free-form storytelling is forbidden.
@@ -197,10 +195,12 @@ Ground rules: mention only people, objects, and events the fact list
 reports. Never invent players, a goalkeeper, defenders, or a crowd it does
 not mention, and do not fill gaps with general football knowledge.`
 
-// Placement observation prompt — every request contains exactly one ordinary
-// extracted frame. Ordered reasoning happens later in JavaScript. This avoids
-// the native QVAC worker crashes reproduced with both two-image attachments
-// and a side-by-side composite while retaining auditable temporal evidence.
+// Placement uses two independent single-image tasks. The proven full-frame
+// contract establishes visibility, depth, and ground proximity. Only after
+// JavaScript selects a legitimate arrival still does a goal crop supply the
+// authoritative row and side-versus-center judgment. Ordered reasoning still
+// happens in JavaScript, and QVAC never receives a multi-image or composite
+// placement request.
 const PLACEMENT_PROMPT = `You are looking at ONE still moment from a short football (soccer) clip.
 Report only what is visible in this one moment. Do not infer what happened
 before or after it, and do not reconstruct the ball's earlier path.
@@ -274,6 +274,22 @@ or "rolled in low through the middle". Plain everyday football
 words only: never use the words frame, image, grid, row, column, or cell,
 and never describe how you worked the answer out.
 ${GROUNDING_RULES}`
+
+const PLACEMENT_GEOMETRY_PROMPT = `This image is an enlarged crop around one football goal.
+Identify the actual football, ignoring lights and goal-frame joints.
+Judge where the football is relative to the FRONT rectangular goal mouth.
+
+First divide the goal mouth vertically into three equal bands and report row:
+- top: upper third
+- mid: middle third
+- bottom: lower third
+
+Then report column without guessing left versus right:
+- center: middle third horizontally
+- side: either outer third horizontally
+- unclear: the football or front goal mouth cannot be located reliably
+
+Return only the structured fields.`
 
 // Head-to-head prompt — sent with BOTH clips' key frames attached (the
 // first clip's frames, then the second's). Direct either/or questions
@@ -410,11 +426,9 @@ const scoreField = {
   additionalProperties: false,
 }
 
-// Placement carries no model-chosen score, and the model never even picks a
-// whole zone: it commits to a row and a column separately (two small closed
-// choices are far more reliable for a 2B VLM than one 9-way pick), and the
-// zone key plus its score are composed in code. `row` and `column` come
-// before `explanation` so the grammar forces the commitments first.
+// Keep the proven b233e67 full-frame contract intact so its depth classifier
+// does not regress. Its row and column are discarded after temporal selection;
+// the stage-qualified crop below supplies the authoritative 2-D geometry.
 const placementField = {
   type: 'object',
   properties: {
@@ -435,6 +449,17 @@ const placementField = {
     'column',
     'explanation',
   ],
+  additionalProperties: false,
+}
+
+const placementGeometryField = {
+  type: 'object',
+  properties: {
+    row: { type: 'string', enum: ['top', 'mid', 'bottom', 'unclear'] },
+    // Keeping both axes preserves the proven simple spatial formulation.
+    column: { type: 'string', enum: ['side', 'center', 'unclear'] },
+  },
+  required: ['row', 'column'],
   additionalProperties: false,
 }
 
@@ -1159,13 +1184,18 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
   // windows overlap. This keeps the native worker on its proven one-image
   // path and avoids asking Qwen contradictory questions about the same still.
   const observationCache = new Map()
+  const geometryCache = new Map()
+  const placementCropper = metadata.placementCropper || cropPlacementGoal
+  const placementFlipper = metadata.placementFlipper || flipFrame
   const initialFrames = frames.slice(-PLACEMENT_FRAME_COUNT)
   const initialVotes = await collectPlacementVotes(
     sdk,
     modelId,
     initialFrames,
     frames,
-    observationCache
+    observationCache,
+    geometryCache,
+    placementCropper
   )
   const failedMirrorFrames = new Set()
   const mirrorChecks = []
@@ -1175,7 +1205,9 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
     modelId,
     initialVotes,
     failedMirrorFrames,
-    observationCache
+    geometryCache,
+    placementCropper,
+    placementFlipper
   )
   if (initial.mirror) mirrorChecks.push(initial.mirror)
 
@@ -1199,7 +1231,9 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
     modelId,
     recoveryFrames,
     frames,
-    observationCache
+    observationCache,
+    geometryCache,
+    placementCropper
   )
   const frameOrder = new Map(frames.map((frame, index) => [frame, index]))
   const combinedVotes = [...initialVotes, ...recoveryVotes]
@@ -1210,7 +1244,9 @@ async function classifyPlacement (sdk, modelId, frames, metadata = {}) {
     modelId,
     combinedVotes,
     failedMirrorFrames,
-    observationCache
+    geometryCache,
+    placementCropper,
+    placementFlipper
   )
   if (combined.mirror) mirrorChecks.push(combined.mirror)
 
@@ -1245,7 +1281,9 @@ async function collectPlacementVotes (
   modelId,
   frames,
   allFrames = frames,
-  observationCache = new Map()
+  observationCache = new Map(),
+  geometryCache = new Map(),
+  placementCropper = cropPlacementGoal
 ) {
   const pairs = frames.map((frame) => {
     const index = allFrames.indexOf(frame)
@@ -1287,7 +1325,20 @@ async function collectPlacementVotes (
       frame,
       observationCache
     )
-    const vote = combinePlacementObservations(before, target)
+    let vote = combinePlacementObservations(before, target)
+    if (vote.shot_moment === 'arrival') {
+      const evidenceFrame = vote.evidence_source === 'context_goal_plane'
+        ? contextFrame
+        : frame
+      const geometry = await observePlacementGeometry(
+        sdk,
+        modelId,
+        evidenceFrame,
+        geometryCache,
+        placementCropper
+      )
+      vote = combinePlacementObservations(before, target, geometry)
+    }
     votes.push({ frame, contextFrame, ...vote })
     console.log(
       `[qvac] placement evidence ${path.basename(contextFrame)} -> ${path.basename(frame)}: ` +
@@ -1316,16 +1367,69 @@ async function observePlacementFrame (sdk, modelId, frame, cache) {
   return cache.get(frame)
 }
 
+async function observePlacementGeometry (
+  sdk,
+  modelId,
+  frame,
+  cache,
+  placementCropper = cropPlacementGoal
+) {
+  if (!cache.has(frame)) {
+    const pending = (async () => {
+      const crop = await placementCropper(frame)
+      if (!crop) return { row: 'unclear', column: 'unclear' }
+      return askPlacementGeometryWithRetry(sdk, modelId, crop)
+    })()
+    cache.set(frame, pending)
+    try {
+      return await pending
+    } catch (err) {
+      cache.delete(frame)
+      throw err
+    }
+  }
+  return cache.get(frame)
+}
+
 // Retry a technical/model-output failure once against the exact same frame.
 // If both attempts fail, the error propagates as a system failure; it is never
 // turned into a claim about clip quality.
 async function askPlacementWithRetry (sdk, modelId, frame) {
+  return askPlacementTaskWithRetry(
+    sdk,
+    modelId,
+    frame,
+    askPlacement,
+    normalizePlacementObservation,
+    'placement depth'
+  )
+}
+
+async function askPlacementGeometryWithRetry (sdk, modelId, frame) {
+  return askPlacementTaskWithRetry(
+    sdk,
+    modelId,
+    frame,
+    askPlacementGeometry,
+    normalizePlacementGeometry,
+    'placement geometry'
+  )
+}
+
+async function askPlacementTaskWithRetry (
+  sdk,
+  modelId,
+  frame,
+  ask,
+  normalize,
+  label
+) {
   let lastError
   let activeSdk = sdk
   let activeModelId = modelId
   for (let attempt = 1; attempt <= PLACEMENT_CALL_ATTEMPTS; attempt++) {
     try {
-      return normalizePlacementObservation(parseScore(await askPlacement(
+      return normalize(parseScore(await ask(
         activeSdk,
         activeModelId,
         frame
@@ -1333,7 +1437,7 @@ async function askPlacementWithRetry (sdk, modelId, frame) {
     } catch (err) {
       lastError = err
       console.warn(
-        `[qvac] placement call failed for ${path.basename(frame)} ` +
+        `[qvac] ${label} call failed for ${path.basename(frame)} ` +
         `(attempt ${attempt}/${PLACEMENT_CALL_ATTEMPTS}): ${err.message}`
       )
 
@@ -1425,7 +1529,19 @@ function normalizePlacementObservation (observation) {
   }
 }
 
-function combinePlacementObservations (before, target) {
+function normalizePlacementGeometry (observation) {
+  const safe = observation && typeof observation === 'object' ? observation : {}
+  return {
+    row: ['top', 'mid', 'bottom', 'unclear'].includes(safe.row)
+      ? safe.row
+      : 'unclear',
+    column: ['side', 'center', 'unclear'].includes(safe.column)
+      ? safe.column
+      : 'unclear',
+  }
+}
+
+function combinePlacementObservations (before, target, geometry) {
   const beforeStage = normalizeBallGoalStage(before?.ball_goal_stage)
   const targetStage = normalizeBallGoalStage(target?.ball_goal_stage)
   let evidence = target
@@ -1458,6 +1574,8 @@ function combinePlacementObservations (before, target) {
 
   return normalizePlacementVote({
     ...evidence,
+    row: geometry?.row ?? evidence?.row,
+    column: geometry?.column ?? evidence?.column,
     before_ball_goal_stage: beforeStage,
     ball_goal_stage: targetStage,
     evidence_ball_goal_stage: normalizeBallGoalStage(evidence?.ball_goal_stage),
@@ -1468,11 +1586,9 @@ function combinePlacementObservations (before, target) {
   })
 }
 
-// The small VLM can identify that a ball is sitting on the turf while still
-// emitting the contradictory word `mid`. Ground proximity is a simpler visual
-// commitment made before row, so resolve only that explicit contradiction in
-// code. This never turns an unclear row into a score and never overrides a
-// ball/goal/shot-moment failure.
+// Ground proximity may resolve an ambiguous middle-height report, but it is not
+// reliable enough to override an explicit high report. This never turns an
+// unclear row into a score and never overrides a ball/goal/shot-moment failure.
 function normalizePlacementVote (vote) {
   const safe = vote && typeof vote === 'object' ? vote : {}
   const shotMoment = ['arrival', 'aftermath', 'unclear'].includes(safe.shot_moment)
@@ -1506,7 +1622,7 @@ function normalizePlacementVote (vote) {
   const heightCorrected =
     hasUsableSceneEvidence &&
     ground === 'near_ground' &&
-    (reportedRow === 'mid' || reportedRow === 'top')
+    reportedRow === 'mid'
   const aftermathDiscarded = shotMoment === 'aftermath'
 
   return {
@@ -1531,7 +1647,9 @@ async function assessWithMirror (
   modelId,
   votes,
   failedMirrorFrames,
-  observationCache = new Map()
+  geometryCache = new Map(),
+  placementCropper = cropPlacementGoal,
+  placementFlipper = flipFrame
 ) {
   const assessment = assessPlacementEvidence(votes)
   if (!assessment.ready) return { assessment, mirror: null }
@@ -1542,7 +1660,9 @@ async function assessWithMirror (
     votes,
     assessment,
     failedMirrorFrames,
-    observationCache
+    geometryCache,
+    placementCropper,
+    placementFlipper
   )
   if (mirror.passed) {
     return {
@@ -1577,7 +1697,9 @@ async function verifyPlacementMirror (
   votes,
   assessment,
   excludedFrames,
-  observationCache = new Map()
+  geometryCache = new Map(),
+  placementCropper = cropPlacementGoal,
+  placementFlipper = flipFrame
 ) {
   if (assessment.column === 'center') {
     return {
@@ -1597,42 +1719,29 @@ async function verifyPlacementMirror (
     return { required: true, passed: false, frame: null, reason: 'no_unused_decider' }
   }
 
-  const mirroredContext = await flipFrame(decider.contextFrame || decider.frame)
-  const mirroredFrame = await flipFrame(decider.frame)
-  const before = await observePlacementFrame(
-    sdk,
-    modelId,
-    mirroredContext,
-    observationCache
-  )
-  const target = await observePlacementFrame(
+  const evidenceFrame = decider.evidence_source === 'context_goal_plane'
+    ? decider.contextFrame
+    : decider.frame
+  const mirroredFrame = await placementFlipper(evidenceFrame)
+  const mirrored = await observePlacementGeometry(
     sdk,
     modelId,
     mirroredFrame,
-    observationCache
+    geometryCache,
+    placementCropper
   )
-  const mirrored = combinePlacementObservations(before, target)
   // Center-versus-side is invariant under a horizontal flip. Exact direction
   // is intentionally never requested or displayed because a correctly
   // flipping left/right word still proved semantically reversed on real clips.
   const expectedColumn = assessment.column
-  const invariantsPassed =
-    mirrored.ball_visibility === 'visible' &&
-    mirrored.goal_visibility === 'full' &&
-    mirrored.ball_goal_relation === 'in_or_entering' &&
-    mirrored.shot_moment === 'arrival' &&
-    mirrored.row === assessment.row &&
-    mirrored.column === expectedColumn &&
-    mirrored.ball_ground_proximity === decider.ball_ground_proximity
+  // A horizontal mirror verifies only the horizontal class. It cannot prove a
+  // vertical label, and it must not re-decide the already-established depth.
+  const invariantsPassed = mirrored.column === expectedColumn
   const passed = invariantsPassed
 
   console.log(
-    `[qvac] placement mirror check: ` +
-    `stage=${mirrored.before_ball_goal_stage}->${mirrored.ball_goal_stage} ` +
-    `moment=${mirrored.shot_moment} source=${mirrored.evidence_source} ` +
-    `ground=${mirrored.ball_ground_proximity} ` +
-    `row=${mirrored.row}${mirrored.heightCorrected ? ` (reported=${mirrored.reportedRow})` : ''} ` +
-    `column=${mirrored.column} (expected row=${assessment.row} column=${expectedColumn})`
+    `[qvac] placement mirror check: row=${mirrored.row} ` +
+    `column=${mirrored.column} (expected column=${expectedColumn})`
   )
 
   return {
@@ -1642,8 +1751,8 @@ async function verifyPlacementMirror (
     expectedColumn,
     observedColumn: mirrored.column,
     observedRow: mirrored.row,
-    observedGroundProximity: mirrored.ball_ground_proximity,
-    heightCorrected: mirrored.heightCorrected,
+    observedGroundProximity: decider.ball_ground_proximity,
+    heightCorrected: false,
     invariantsPassed,
     directionVerified: false,
     directionNeutral: true,
@@ -1704,7 +1813,143 @@ function publicAssessment (assessment) {
   }
 }
 
-// One single-frame observation, grammar-locked to the spatial evidence enums.
+function goalFrameWhiteAt (pixels, offset) {
+  const red = pixels[offset]
+  const green = pixels[offset + 1]
+  const blue = pixels[offset + 2]
+  return Math.min(red, green, blue) >= 110 &&
+    Math.max(red, green, blue) - Math.min(red, green, blue) <= 55
+}
+
+function longestGoalFrameBandRun (pixels, width, height, y) {
+  let best = null
+  let start = -1
+  let lastWhite = -1
+  let whiteCount = 0
+  for (let x = 0; x < width; x += 1) {
+    let white = false
+    for (let yy = Math.max(0, y - 3); yy <= Math.min(height - 1, y + 3); yy += 1) {
+      if (goalFrameWhiteAt(pixels, (yy * width + x) * 3)) {
+        white = true
+        break
+      }
+    }
+    if (!white) continue
+
+    if (start < 0 || x - lastWhite > 9) {
+      start = x
+      whiteCount = 0
+    }
+    lastWhite = x
+    whiteCount += 1
+    const candidate = { y, left: start, right: x, span: x - start + 1, whiteCount }
+    if (!best || candidate.span > best.span) best = candidate
+  }
+  return best
+}
+
+function horizontalOverlap (first, second) {
+  return Math.max(0, Math.min(first.right, second.right) - Math.max(first.left, second.left) + 1)
+}
+
+function hasGoalPostSupport (pixels, width, height, crossbar, estimatedHeight) {
+  const xRadius = Math.max(3, Math.round(crossbar.span * 0.025))
+  const yEnd = Math.min(height - 1, Math.round(crossbar.y + estimatedHeight * 1.35))
+  const required = estimatedHeight * 0.4
+  for (const endpoint of [crossbar.left, crossbar.right]) {
+    let best = 0
+    for (let x = Math.max(0, endpoint - xRadius); x <= Math.min(width - 1, endpoint + xRadius); x += 1) {
+      let support = 0
+      for (let y = crossbar.y; y <= yEnd; y += 1) {
+        let white = false
+        for (let xx = Math.max(0, x - 2); xx <= Math.min(width - 1, x + 2); xx += 1) {
+          if (goalFrameWhiteAt(pixels, (y * width + xx) * 3)) {
+            white = true
+            break
+          }
+        }
+        if (white) support += 1
+      }
+      best = Math.max(best, support)
+    }
+    if (best >= required) return true
+  }
+  return false
+}
+
+function detectGoalCrossbar (pixels, width, height) {
+  if (!Buffer.isBuffer(pixels) || pixels.length < width * height * 3) return null
+  const candidates = []
+  for (let y = Math.floor(height * 0.15); y < Math.floor(height * 0.55); y += 1) {
+    const candidate = longestGoalFrameBandRun(pixels, width, height, y)
+    if (candidate) candidates.push(candidate)
+  }
+  const maxSpan = Math.max(0, ...candidates.map((candidate) => candidate.span))
+  const crossbar = candidates
+    .filter((candidate) => candidate.span >= maxSpan * 0.98)
+    .sort((a, b) => a.y - b.y)[0]
+  if (
+    !crossbar ||
+    crossbar.span < width * 0.25 ||
+    crossbar.whiteCount / crossbar.span < 0.8
+  ) return null
+
+  const estimatedHeight = crossbar.span / 2.5
+  const lowerCandidates = candidates.filter((candidate) =>
+    candidate.y >= crossbar.y + estimatedHeight * 0.6 &&
+    candidate.y <= crossbar.y + estimatedHeight * 1.45 &&
+    candidate.span >= crossbar.span * 0.4 &&
+    horizontalOverlap(candidate, crossbar) >= crossbar.span * 0.35
+  )
+  if (lowerCandidates.length === 0) return null
+  if (!hasGoalPostSupport(pixels, width, height, crossbar, estimatedHeight)) return null
+  return crossbar
+}
+
+function placementGoalCropBox (crossbar, width, height) {
+  const estimatedHeight = crossbar.span / 2.5
+  const marginX = crossbar.span * 0.1
+  const left = Math.max(0, Math.floor(crossbar.left - marginX))
+  const right = Math.min(width, Math.ceil(crossbar.right + marginX))
+  const top = Math.max(0, Math.floor(crossbar.y - estimatedHeight * 0.32))
+  const bottom = Math.min(height, Math.ceil(crossbar.y + estimatedHeight * 1.2))
+  return { left, right, top, bottom }
+}
+
+async function cropPlacementGoal (framePath) {
+  const probe = await execFileAsync(ffprobePath, [
+    '-v', 'error', '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', framePath,
+  ])
+  const [width, height] = String(probe.stdout).trim().split('x').map(Number)
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    throw new Error(`Could not read placement frame dimensions for ${framePath}`)
+  }
+
+  const decoded = await execFileAsync(ffmpegPath, [
+    '-hide_banner', '-loglevel', 'error', '-i', framePath,
+    '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-frames:v', '1', 'pipe:1',
+  ], { encoding: 'buffer', maxBuffer: width * height * 4 })
+  const crossbar = detectGoalCrossbar(decoded.stdout, width, height)
+  if (!crossbar) {
+    console.warn(`[qvac] no reliable goal-frame crop for ${path.basename(framePath)}`)
+    return null
+  }
+
+  const box = placementGoalCropBox(crossbar, width, height)
+  const out = framePath.replace(/\.png$/i, '.goal.png')
+  if (!fs.existsSync(out)) {
+    await execFileAsync(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error', '-y', '-i', framePath,
+      '-vf', `crop=${box.right - box.left}:${box.bottom - box.top}:${box.left}:${box.top},` +
+        "scale='min(1320,iw*3)':-2",
+      '-frames:v', '1', out,
+    ])
+  }
+  return out
+}
+
+// One single-frame depth observation, grammar-locked to closed evidence enums.
 function askPlacement (sdk, modelId, framePath) {
   return runCompletion(sdk, modelId, {
     history: [{
@@ -1714,7 +1959,21 @@ function askPlacement (sdk, modelId, framePath) {
     }],
     responseFormat: {
       type: 'json_schema',
-      json_schema: { name: 'placement_zone', schema: placementField },
+      json_schema: { name: 'placement_depth', schema: placementField },
+    },
+  })
+}
+
+function askPlacementGeometry (sdk, modelId, framePath) {
+  return runCompletion(sdk, modelId, {
+    history: [{
+      role: 'user',
+      content: PLACEMENT_GEOMETRY_PROMPT,
+      attachments: [{ path: framePath }],
+    }],
+    responseFormat: {
+      type: 'json_schema',
+      json_schema: { name: 'placement_geometry', schema: placementGeometryField },
     },
   })
 }
@@ -2413,6 +2672,8 @@ module.exports = {
   prepareModel,
   scoreClip,
   classifyPlacement,
+  detectGoalCrossbar,
+  placementGoalCropBox,
   compareClips,
   compareHeadToHead,
   canCompareHeadToHead,

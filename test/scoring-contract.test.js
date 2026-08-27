@@ -5,12 +5,12 @@ const assert = require('node:assert/strict')
 const Module = require('node:module')
 
 // scoring.js loads only these two native-binary path packages at module load.
-// Point both at a harmless executable so the policy orchestration can be
-// tested without downloading the application's npm dependencies.
+// Test hooks below replace every placement crop/flip operation, so these paths
+// are never spawned. process.execPath keeps the module-load fixture portable.
 const originalLoad = Module._load
 Module._load = function (request, parent, isMain) {
-  if (request === 'ffmpeg-static') return '/bin/true'
-  if (request === 'ffprobe-static') return { path: '/bin/true' }
+  if (request === 'ffmpeg-static') return process.execPath
+  if (request === 'ffprobe-static') return { path: process.execPath }
   return originalLoad.call(this, request, parent, isMain)
 }
 const scoring = require('../src/main/scoring')
@@ -88,29 +88,66 @@ function mockObservationSdk (byPath) {
     frame,
     Array.isArray(value) ? [...value] : [value],
   ]))
+  const observed = new Map()
   return mockSdk((request) => {
     const frame = request.history[0].attachments?.[0]?.path
-    return queues.get(frame)?.shift()
+    const task = request.responseFormat?.json_schema?.name
+    if (task === 'placement_geometry') {
+      const source = frame.replace(/\.goal\.png$/i, '.png')
+      const value = observed.get(source) || queues.get(source)?.[0]
+      const geometry = value?.geometry || value
+      return value && {
+        row: geometry.row,
+        column: geometry.column === 'left' || geometry.column === 'right'
+          ? 'side'
+          : geometry.column,
+      }
+    }
+
+    const value = queues.get(frame)?.shift()
+    if (value && !(value instanceof Error)) observed.set(frame, value)
+    if (!value || value instanceof Error) return value
+    return {
+      ball_visibility: value.ball_visibility,
+      goal_visibility: value.goal_visibility,
+      ball_goal_stage: value.ball_goal_stage,
+      ball_ground_proximity: value.ball_ground_proximity,
+      row: value.row,
+      column: value.column,
+      explanation: value.explanation,
+    }
   })
 }
 
 const frames = ['f1.png', 'f2.png', 'f3.png', 'f4.png', 'f5.png', 'f6.png']
+const placementTestHooks = {
+  placementCropper: async (frame) => frame.replace(/\.png$/i, '.goal.png'),
+  placementFlipper: async (frame) => frame.replace(/\.png$/i, '.mirror.png'),
+}
+
+function classifyPlacement (model, selectedFrames = frames) {
+  return scoring.classifyPlacement(model.sdk, 'model', selectedFrames, placementTestHooks)
+}
 
 test('initial quorum produces a CLEAR placement without recovery', async () => {
+  const depthMidGeometryTop = observation({
+    row: 'mid',
+    geometry: { row: 'top', column: 'center' },
+  })
   const model = mockObservationSdk({
     'f2.png': outside(),
     'f3.png': outside(),
-    'f4.png': observation(),
-    'f5.png': observation(),
+    'f4.png': depthMidGeometryTop,
+    'f5.png': depthMidGeometryTop,
     'f6.png': observation({ row: 'mid' }),
   })
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.row, 'top')
   assert.equal(result.column, 'center')
   assert.equal(result.evidence.recovery, null)
-  assert.equal(model.calls(), 5)
+  assert.equal(model.calls(), 7)
   assert.deepEqual(
     model.requests().map((request) =>
       request.history[0].attachments.map((attachment) => attachment.path)
@@ -121,6 +158,20 @@ test('initial quorum produces a CLEAR placement without recovery', async () => {
       ['f4.png'],
       ['f5.png'],
       ['f6.png'],
+      ['f4.goal.png'],
+      ['f5.goal.png'],
+    ]
+  )
+  assert.deepEqual(
+    model.requests().map((request) => request.responseFormat.json_schema.name),
+    [
+      'placement_depth',
+      'placement_depth',
+      'placement_depth',
+      'placement_depth',
+      'placement_depth',
+      'placement_geometry',
+      'placement_geometry',
     ]
   )
 })
@@ -133,7 +184,7 @@ test('resolved explanation comes from a usable observation, not a later invalid 
     'f5.png': observation({ explanation: 'Second usable observation.' }),
     'f6.png': missing({ explanation: 'Invalid later guess.' }),
   })
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.explanation, 'Second usable observation.')
@@ -148,14 +199,14 @@ test('failed initial evidence can become RECOVERED on unused frames', async () =
     'f5.png': missing(),
     'f6.png': missing(),
   })
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'RECOVERED')
   assert.equal(result.row, 'top')
   assert.equal(result.column, 'center')
   assert.equal(result.evidence.initial.ready, false)
   assert.equal(result.evidence.combined.ready, true)
-  assert.equal(model.calls(), 6)
+  assert.equal(model.calls(), 8)
 })
 
 test('Player A aftermath frames cannot turn a lifted arrival into a bottom placement', async () => {
@@ -178,14 +229,14 @@ test('Player A aftermath frames cannot turn a lifted arrival into a bottom place
     'f6.png': fallenInNet,
   })
 
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'RECOVERED')
   assert.equal(result.row, 'top')
   assert.equal(result.column, 'center')
   assert.equal(result.evidence.initial.counts.aftermath, 3)
   assert.equal(result.evidence.initial.counts.usable, 0)
-  assert.equal(model.calls(), 6)
+  assert.equal(model.calls(), 8)
 })
 
 test('Player A uses the high goal-plane position before the ball falls low in the net', async () => {
@@ -211,10 +262,9 @@ test('Player A uses the high goal-plane position before the ball falls low in th
     'f5.png': fallenLowInside,
     'f6.png': fallenLowInside,
     'f3.mirror.png': highSideAtLine,
-    'f5.mirror.png': fallenLowInside,
   })
 
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.row, 'top')
@@ -222,7 +272,7 @@ test('Player A uses the high goal-plane position before the ball falls low in th
   assert.equal(result.evidence.initial.counts.usable, 2)
   assert.equal(result.evidence.initial.counts.aftermath, 1)
   assert.equal(result.evidence.mirrorChecks[0].passed, true)
-  assert.equal(model.calls(), 7)
+  assert.equal(model.calls(), 8)
 })
 
 test('a foreground ball projected over the goal cannot become fake low placement evidence', async () => {
@@ -237,7 +287,7 @@ test('a foreground ball projected over the goal cannot become fake low placement
     frames.map((frame) => [frame, foregroundProjection])
   ))
 
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'UNRESOLVED')
   assert.equal(result.evidence.combined.counts.usable, 0)
@@ -249,7 +299,7 @@ test('failed initial and recovery evidence remains UNRESOLVED with feedback', as
   const model = mockObservationSdk(Object.fromEntries(
     frames.map((frame) => [frame, missing()])
   ))
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'UNRESOLVED')
   assert.equal(result.feedback.code, 'PLACEMENT_UNRESOLVED')
@@ -265,16 +315,15 @@ test('an off-centre placement must remain side under the mirrored-image check', 
     'f4.png': side,
     'f5.png': side,
     'f6.png': side,
-    'f3.mirror.png': outside(),
     'f5.mirror.png': side,
   })
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.column, 'side')
   assert.equal(result.directionNeutral, true)
   assert.equal(result.evidence.mirrorChecks[0].passed, true)
-  assert.equal(model.calls(), 7)
+  assert.equal(model.calls(), 8)
 })
 
 test('Player B ground evidence corrects a contradictory mid-height label to bottom-side', async () => {
@@ -283,11 +332,6 @@ test('Player B ground evidence corrects a contradictory mid-height label to bott
     column: 'side',
     ball_ground_proximity: 'near_ground',
     explanation: 'The ball appears waist high near a post.',
-  })
-  const mirroredMidSide = observation({
-    row: 'mid',
-    column: 'side',
-    ball_ground_proximity: 'near_ground',
   })
   const reportedMidSideAtLine = goalPlane({
     row: 'mid',
@@ -301,19 +345,101 @@ test('Player B ground evidence corrects a contradictory mid-height label to bott
     'f5.png': reportedMidSide,
     'f6.png': reportedMidSide,
     'f3.mirror.png': reportedMidSideAtLine,
-    'f5.mirror.png': mirroredMidSide,
   })
 
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.row, 'bottom')
   assert.equal(result.column, 'side')
   assert.equal(result.heightCorrected, true)
   assert.equal(result.evidence.initial.counts.heightCorrected, 2)
-  assert.equal(result.evidence.mirrorChecks[0].observedRow, 'bottom')
-  assert.equal(result.evidence.mirrorChecks[0].heightCorrected, true)
-  assert.equal(model.calls(), 7)
+  assert.equal(result.evidence.mirrorChecks[0].observedRow, 'mid')
+  assert.equal(result.evidence.mirrorChecks[0].heightCorrected, false)
+  assert.equal(model.calls(), 8)
+})
+
+test('near-ground evidence cannot override an explicit high arrival', async () => {
+  const highNearGround = observation({
+    row: 'top',
+    column: 'side',
+    ball_ground_proximity: 'near_ground',
+  })
+  const highNearGroundAtLine = goalPlane({
+    row: 'top',
+    column: 'side',
+    ball_ground_proximity: 'near_ground',
+  })
+  const model = mockObservationSdk({
+    'f2.png': outside(),
+    'f3.png': highNearGroundAtLine,
+    'f4.png': highNearGround,
+    'f5.png': highNearGround,
+    'f6.png': highNearGround,
+    'f3.mirror.png': highNearGroundAtLine,
+  })
+
+  const result = await classifyPlacement(model)
+
+  assert.equal(result.status, 'CLEAR')
+  assert.equal(result.row, 'top')
+  assert.equal(result.column, 'side')
+  assert.equal(result.heightCorrected, false)
+})
+
+test('an explicit low arrival remains bottom without a ground correction', async () => {
+  const lowSide = observation({ row: 'bottom', column: 'side' })
+  const lowSideAtLine = goalPlane({ row: 'bottom', column: 'side' })
+  const model = mockObservationSdk({
+    'f2.png': outside(),
+    'f3.png': lowSideAtLine,
+    'f4.png': lowSide,
+    'f5.png': lowSide,
+    'f6.png': lowSide,
+    'f3.mirror.png': lowSideAtLine,
+  })
+
+  const result = await classifyPlacement(model)
+
+  assert.equal(result.status, 'CLEAR')
+  assert.equal(result.row, 'bottom')
+  assert.equal(result.column, 'side')
+  assert.equal(result.heightCorrected, false)
+})
+
+test('goal crop localization requires a crossbar, lower rail, and post support', () => {
+  const width = 120
+  const height = 120
+  const pixels = Buffer.alloc(width * height * 3)
+  const draw = (x, y) => {
+    const offset = (y * width + x) * 3
+    pixels[offset] = 220
+    pixels[offset + 1] = 220
+    pixels[offset + 2] = 220
+  }
+  for (let x = 20; x <= 100; x += 1) {
+    draw(x, 30)
+    draw(x, 65)
+  }
+  for (let y = 30; y <= 65; y += 1) {
+    draw(20, y)
+    draw(100, y)
+  }
+
+  const crossbar = scoring.detectGoalCrossbar(pixels, width, height)
+  assert.ok(crossbar)
+  assert.equal(crossbar.left, 20)
+  assert.equal(crossbar.right, 100)
+  const crop = scoring.placementGoalCropBox(crossbar, width, height)
+  assert.ok(crop.left < crossbar.left)
+  assert.ok(crop.bottom > 65)
+
+  const unsupported = Buffer.alloc(width * height * 3)
+  for (let x = 20; x <= 100; x += 1) {
+    const offset = (30 * width + x) * 3
+    unsupported.fill(220, offset, offset + 3)
+  }
+  assert.equal(scoring.detectGoalCrossbar(unsupported, width, height), null)
 })
 
 test('legacy directional words are discarded rather than displayed as exact left or right', async () => {
@@ -324,10 +450,9 @@ test('legacy directional words are discarded rather than displayed as exact left
     'f4.png': right,
     'f5.png': right,
     'f6.png': right,
-    'f3.mirror.png': outside(),
     'f5.mirror.png': right,
   })
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'CLEAR')
   assert.equal(result.row, 'mid')
@@ -337,7 +462,7 @@ test('legacy directional words are discarded rather than displayed as exact left
   assert.equal(result.explanation, '')
   assert.equal(result.evidence.mirrorChecks[0].passed, true)
   assert.equal(result.evidence.mirrorChecks[0].directionNeutral, true)
-  assert.equal(model.calls(), 7)
+  assert.equal(model.calls(), 8)
 })
 
 test('mirror checks that lose side-vs-center evidence remain unresolved', async () => {
@@ -350,12 +475,10 @@ test('mirror checks that lose side-vs-center evidence remain unresolved', async 
     'f4.png': side,
     'f5.png': side,
     'f6.png': side,
-    'f3.mirror.png': outside(),
     'f5.mirror.png': center, // initial mirror lost the off-centre class
-    'f2.mirror.png': outside(),
     'f4.mirror.png': center, // combined mirror failed on the other decider
   })
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'UNRESOLVED')
   assert.equal(result.row, 'unclear')
@@ -484,10 +607,10 @@ test('a technical placement call is retried on the same evidence', async () => {
     'f5.png': observation(),
     'f6.png': observation(),
   })
-  const result = await scoring.classifyPlacement(model.sdk, 'model', frames)
+  const result = await classifyPlacement(model)
 
   assert.equal(result.status, 'CLEAR')
-  assert.equal(model.calls(), 6)
+  assert.equal(model.calls(), 8)
 })
 
 test('two technical failures propagate as a system error instead of a clip diagnosis', async () => {
@@ -496,7 +619,7 @@ test('two technical failures propagate as a system error instead of a clip diagn
   })
 
   await assert.rejects(
-    scoring.classifyPlacement(model.sdk, 'model', frames),
+    classifyPlacement(model),
     (err) => err.code === 'PLACEMENT_ANALYSIS_ERROR'
   )
   assert.equal(model.calls(), 2)

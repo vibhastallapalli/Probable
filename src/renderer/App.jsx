@@ -538,7 +538,7 @@ export default function App () {
               </div>
             </div>
           )}
-          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12 }}>
+          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
             {JSON.stringify(escrowRecord, null, 2)}
           </pre>
         </section>
@@ -681,7 +681,7 @@ export default function App () {
           </button>
         </div>
         {settleResult && (
-          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12 }}>
+          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
             {JSON.stringify(settleResult, null, 2)}
           </pre>
         )}

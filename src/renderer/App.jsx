@@ -558,7 +558,7 @@ export default function App () {
         <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
           <button onClick={handleScoreClip} disabled={!videoPath || scoring}>
-            {scoring ? (preparingModel ? 'Preparing model…' : 'Scoring…') : 'Run scoreClip'}
+            {scoring ? (preparingModel ? 'Preparing model…' : 'Scoring…') : 'Score selected clip'}
           </button>
         </div>
 

@@ -391,6 +391,7 @@ export default function App () {
           <input
             type="text"
             placeholder="Escrow ID"
+            aria-label="Escrow ID"
             value={loadId}
             onChange={(e) => setLoadId(e.target.value)}
             disabled={!!escrowId}

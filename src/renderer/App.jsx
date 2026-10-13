@@ -356,7 +356,7 @@ export default function App () {
               value={playerA}
               onChange={(e) => setPlayerA(e.target.value.trim())}
               disabled={!!escrowId}
-              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerA && !isValidAddress(playerA) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
+              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerA && !isValidAddress(playerA) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420, maxWidth: '100%', boxSizing: 'border-box' }}
             />
             {playerA && !isValidAddress(playerA) && (
               <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
@@ -370,7 +370,7 @@ export default function App () {
               value={playerB}
               onChange={(e) => setPlayerB(e.target.value.trim())}
               disabled={!!escrowId}
-              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerB && !isValidAddress(playerB) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
+              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerB && !isValidAddress(playerB) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420, maxWidth: '100%', boxSizing: 'border-box' }}
             />
             {playerB && !isValidAddress(playerB) && (
               <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
@@ -395,7 +395,7 @@ export default function App () {
             value={loadId}
             onChange={(e) => setLoadId(e.target.value)}
             disabled={!!escrowId}
-            style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: '1px solid #444', borderRadius: 4, width: 280 }}
+            style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: '1px solid #444', borderRadius: 4, width: 280, maxWidth: '100%', boxSizing: 'border-box' }}
           />
           <button onClick={handleLoad} disabled={!!escrowId || !loadId.trim()}>
             Load escrow

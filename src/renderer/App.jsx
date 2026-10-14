@@ -336,17 +336,17 @@ export default function App () {
   const settled = escrowRecord?.status === 'settled' || escrowRecord?.status === 'released'
 
   return (
-    <div style={{ fontFamily: 'monospace', padding: 24, background: '#0f1115', color: '#f2f3f5', minHeight: '100vh' }}>
+    <main style={{ fontFamily: 'monospace', padding: 24, background: '#0f1115', color: '#f2f3f5', minHeight: '100vh' }}>
       <StatusBadge modelInfo={modelInfo} mockMode={clipScore?.mock === true} />
-      <h2>Probable Test Harness</h2>
+      <h1 style={{ fontSize: '1.5em', margin: '0.83em 0' }}>Probable Test Harness</h1>
 
       <section style={{ marginBottom: 24 }}>
-        <strong>App wallet</strong>
+        <strong role="heading" aria-level="2">App wallet</strong>
         <p style={{ margin: '4px 0' }}>Address: {address ?? 'initialising…'}</p>
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <strong>Test participants</strong>
+        <strong role="heading" aria-level="2">Test participants</strong>
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
           <label style={{ fontSize: 12 }}>
             Player A address
@@ -356,7 +356,7 @@ export default function App () {
               value={playerA}
               onChange={(e) => setPlayerA(e.target.value.trim())}
               disabled={!!escrowId}
-              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerA && !isValidAddress(playerA) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
+              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerA && !isValidAddress(playerA) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420, maxWidth: '100%', boxSizing: 'border-box' }}
             />
             {playerA && !isValidAddress(playerA) && (
               <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
@@ -370,7 +370,7 @@ export default function App () {
               value={playerB}
               onChange={(e) => setPlayerB(e.target.value.trim())}
               disabled={!!escrowId}
-              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerB && !isValidAddress(playerB) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420 }}
+              style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerB && !isValidAddress(playerB) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420, maxWidth: '100%', boxSizing: 'border-box' }}
             />
             {playerB && !isValidAddress(playerB) && (
               <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
@@ -383,7 +383,7 @@ export default function App () {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <strong>Escrow actions</strong>
+        <strong role="heading" aria-level="2">Escrow actions</strong>
         <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <button onClick={handleCreate} disabled={!!escrowId || !isValidAddress(playerA) || !isValidAddress(playerB)}>
             Create test escrow
@@ -391,10 +391,11 @@ export default function App () {
           <input
             type="text"
             placeholder="Escrow ID"
+            aria-label="Escrow ID"
             value={loadId}
             onChange={(e) => setLoadId(e.target.value)}
             disabled={!!escrowId}
-            style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: '1px solid #444', borderRadius: 4, width: 280 }}
+            style={{ fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: '1px solid #444', borderRadius: 4, width: 280, maxWidth: '100%', boxSizing: 'border-box' }}
           />
           <button onClick={handleLoad} disabled={!!escrowId || !loadId.trim()}>
             Load escrow
@@ -415,7 +416,7 @@ export default function App () {
 
       <section style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <strong>Saved escrows</strong>
+          <strong role="heading" aria-level="2">Saved escrows</strong>
           {escrowList.length > 0 && (
             <button
               onClick={toggleDeleteMode}
@@ -517,7 +518,7 @@ export default function App () {
 
       {escrowRecord && (
         <section style={{ marginBottom: 24 }}>
-          <strong>Escrow state</strong>
+          <strong role="heading" aria-level="2">Escrow state</strong>
           {settled && (
             <div style={{ margin: '8px 0', padding: 12, background: '#0e2418', border: '1px solid #2ecc71', borderRadius: 4, fontSize: 12 }}>
               <div style={{ color: '#2ecc71', fontWeight: 'bold', letterSpacing: 1, marginBottom: 6 }}>● SETTLED · PAID OUT</div>
@@ -537,14 +538,14 @@ export default function App () {
               </div>
             </div>
           )}
-          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12 }}>
+          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
             {JSON.stringify(escrowRecord, null, 2)}
           </pre>
         </section>
       )}
 
       <section style={{ marginBottom: 24 }}>
-        <strong>Clip scoring [judged on this device via QVAC]</strong>
+        <strong role="heading" aria-level="2">Clip scoring [judged on this device via QVAC]</strong>
         <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
           Scored on the four FIFA Puskas Award criteria [the rubric FIFA uses for its own goal of the year]
         </p>
@@ -557,7 +558,7 @@ export default function App () {
         <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button onClick={handlePickVideo} disabled={scoring}>Pick video file</button>
           <button onClick={handleScoreClip} disabled={!videoPath || scoring}>
-            {scoring ? (preparingModel ? 'Preparing model…' : 'Scoring…') : 'Run scoreClip'}
+            {scoring ? (preparingModel ? 'Preparing model…' : 'Scoring…') : 'Score selected clip'}
           </button>
         </div>
 
@@ -596,7 +597,7 @@ export default function App () {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <strong>Head-to-head verdict [decides the match]</strong>
+        <strong role="heading" aria-level="2">Head-to-head verdict [decides the match]</strong>
         <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
           Both clips judged side by side in one on-device call — who shot from further out,
           whose shot flew faster, who struck it cleaner — plus placement from each clip's goal zone
@@ -664,7 +665,7 @@ export default function App () {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <strong>Match settlement</strong>
+        <strong role="heading" aria-level="2">Match settlement</strong>
         <p style={{ margin: '4px 0', fontSize: 12, color: '#c8ccd2' }}>
           Clip A: {clipScoreA ? `scored (${clipScoreA.total} of 40)` : 'not assigned'} ·
           Clip B: {clipScoreB ? `scored (${clipScoreB.total} of 40)` : 'not assigned'} ·
@@ -680,18 +681,18 @@ export default function App () {
           </button>
         </div>
         {settleResult && (
-          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12 }}>
+          <pre style={{ margin: '8px 0', padding: 12, background: '#1a1d23', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
             {JSON.stringify(settleResult, null, 2)}
           </pre>
         )}
       </section>
 
       <section>
-        <strong>Log</strong>
+        <strong role="heading" aria-level="2">Log</strong>
         <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.6 }}>
           {log.map((entry, i) => <div key={i}>{entry}</div>)}
         </div>
       </section>
-    </div>
+    </main>
   )
 }

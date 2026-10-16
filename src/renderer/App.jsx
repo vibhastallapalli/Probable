@@ -354,12 +354,14 @@ export default function App () {
               type="text"
               placeholder="0x…"
               value={playerA}
+              aria-invalid={!!playerA && !isValidAddress(playerA)}
+              aria-describedby={playerA && !isValidAddress(playerA) ? 'player-a-error' : undefined}
               onChange={(e) => setPlayerA(e.target.value.trim())}
               disabled={!!escrowId}
               style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerA && !isValidAddress(playerA) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420, maxWidth: '100%', boxSizing: 'border-box' }}
             />
             {playerA && !isValidAddress(playerA) && (
-              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
+              <span id="player-a-error" style={{ fontSize: 11, color: '#ff8a80' }}>Must be a 42 character 0x address</span>
             )}
           </label>
           <label style={{ fontSize: 12 }}>
@@ -368,12 +370,14 @@ export default function App () {
               type="text"
               placeholder="0x…"
               value={playerB}
+              aria-invalid={!!playerB && !isValidAddress(playerB)}
+              aria-describedby={playerB && !isValidAddress(playerB) ? 'player-b-error' : undefined}
               onChange={(e) => setPlayerB(e.target.value.trim())}
               disabled={!!escrowId}
               style={{ display: 'block', marginTop: 4, fontFamily: 'monospace', fontSize: 12, padding: '4px 8px', background: '#1a1d23', color: '#f2f3f5', border: `1px solid ${playerB && !isValidAddress(playerB) ? '#c0392b' : '#444'}`, borderRadius: 4, width: 420, maxWidth: '100%', boxSizing: 'border-box' }}
             />
             {playerB && !isValidAddress(playerB) && (
-              <span style={{ fontSize: 11, color: '#c0392b' }}>Must be a 42 character 0x address</span>
+              <span id="player-b-error" style={{ fontSize: 11, color: '#ff8a80' }}>Must be a 42 character 0x address</span>
             )}
           </label>
         </div>
